@@ -50,11 +50,13 @@ ZEND_GET_MODULE(wmerrors)
 PHP_INI_BEGIN()
 	STD_PHP_INI_BOOLEAN("wmerrors.enabled", "0", PHP_INI_ALL, OnUpdateBool, enabled, zend_wmerrors_globals, wmerrors_globals )
 	STD_PHP_INI_ENTRY("wmerrors.message_file", "", PHP_INI_ALL, OnUpdateString, message_file, zend_wmerrors_globals, wmerrors_globals)
+	STD_PHP_INI_ENTRY("wmerrors.logging_file", "", PHP_INI_ALL, OnUpdateString, logging_file, zend_wmerrors_globals, wmerrors_globals)
 PHP_INI_END()
 
 static void php_wmerrors_init_globals(zend_wmerrors_globals *wmerrors_globals)
 {
 	wmerrors_globals->message_file = NULL;
+	wmerrors_globals->logging_file = NULL;
 }
 
 PHP_MINIT_FUNCTION(wmerrors)
@@ -108,6 +110,13 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 {
 	TSRMLS_FETCH();
 	
+	/* Do not call the custom error handling if:
+	 * it's not enabled,
+	 * OR the error is not one of E_{,CORE_,COMPILE_,USER_,RECOVERABLE_}ERROR,
+	 * OR the error is an E_RECOVERABLE_ERROR and is being thrown as an exception,
+	 * OR our SAPI is not apache
+	 * OR it's triggering itself (recursion guard)
+	 */	
 	if ( !WMERRORS_G(enabled)
 			|| (type == E_RECOVERABLE_ERROR && WM_ERROR_HANDLING == EH_THROW && !EG(exception))
 			|| (type != E_ERROR && type != E_CORE_ERROR && type != E_COMPILE_ERROR 
@@ -136,7 +145,7 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC)
 {
-	php_stream *stream;
+	php_stream *stream, *log_stream;
 	char *message, *p;
 	int message_len;
 	long maxlen = PHP_STREAM_COPY_ALL;
@@ -155,6 +164,14 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 			ENFORCE_SAFE_MODE | REPORT_ERRORS, NULL);
 	if (!stream) {
 		return;
+	}
+
+	/* Try opening the logging file */
+	log_stream = NULL;
+	if (WMERRORS_G(logging_file) && *WMERRORS_G(logging_file) != '\0')
+	{
+		log_stream = php_stream_open_wrapper(WMERRORS_G(logging_file), "ab",
+			ENFORCE_SAFE_MODE | REPORT_ERRORS, NULL);
 	}
 	
 	/* Don't destroy the caller's va_list */
@@ -206,6 +223,10 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 
 	/* Write the message out */
 	if (expanded.c) {
+		/*php_write(expanded.c, expanded.len TSRMLS_CC);*/
+		if (log_stream) {
+			php_stream_write(log_stream, expanded.c, expanded.len TSRMLS_CC);
+		}
 		php_write(expanded.c, expanded.len TSRMLS_CC);
 	}
 	
