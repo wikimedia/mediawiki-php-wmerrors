@@ -9,6 +9,7 @@
 #include "php_wmerrors.h"
 #include "php_streams.h" /* for __php_stream_call_depth */
 #include "SAPI.h" /* for sapi_module */
+#include "ext/standard/file.h" /* for file_globals aka. FG() */
 #include "ext/date/php_date.h" /* for php_format_date */
 #include "ext/standard/php_smart_str.h" /* for smart_str */
 #include "ext/standard/html.h" /* for php_escape_html_entities */
@@ -121,7 +122,6 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 	 * it's not enabled,
 	 * OR the error is not one of E_{,CORE_,COMPILE_,USER_,RECOVERABLE_}ERROR,
 	 * OR the error is an E_RECOVERABLE_ERROR and is being thrown as an exception,
-	 * OR our SAPI is not apache
 	 * OR it's triggering itself (recursion guard)
 	 */	
 	if ( !WMERRORS_G(enabled)
@@ -137,6 +137,7 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 	/* No more OOM errors for now thanks */
 	zend_set_memory_limit((size_t)-1);
 
+	/* Do not show the html error to console */
 	if ( WMERRORS_G(enabled) && strncmp(sapi_module.name, "cli", 3) ) {
 		/* Show the message */
 		wmerrors_show_message(type, error_filename, error_lineno, format, args TSRMLS_CC);
@@ -152,6 +153,29 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 
 	/* Pass through */
 	old_error_cb(type, error_filename, error_lineno, format, args);
+}
+
+static php_stream * open_logging_file(const char* stream_name) {
+	php_stream * stream;
+	int err; char *errstr = NULL;
+	struct timeval tv;
+	
+	if ( strncmp( stream_name, "tcp://", 6 ) ) {
+		/* Is it a wrapper? */
+		stream = php_stream_open_wrapper(stream_name, "ab", ENFORCE_SAFE_MODE | REPORT_ERRORS, NULL);
+	} else {
+		/* Maybe it's a transport? */
+		double timeout = FG(default_socket_timeout);
+		unsigned long conv;
+		conv = (unsigned long) (timeout * 1000000.0);
+		tv.tv_sec = conv / 1000000;
+		tv.tv_usec = conv % 1000000;
+		
+		stream = php_stream_xport_create(stream_name, strlen(stream_name), ENFORCE_SAFE_MODE | REPORT_ERRORS,
+			STREAM_XPORT_CLIENT | STREAM_XPORT_CONNECT, NULL, &tv, NULL, &errstr, &err);
+	}
+		
+	return stream;
 }
 
 /* Callback for zend_print_zval_r_ex()
@@ -177,7 +201,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	}
 	
 	/* Try opening the logging file */
-	WMERRORS_G(logfile_stream) = php_stream_open_wrapper(WMERRORS_G(logging_file), "ab", ENFORCE_SAFE_MODE | REPORT_ERRORS, NULL);
+	WMERRORS_G(logfile_stream) = open_logging_file( WMERRORS_G(logging_file) );
 	if ( !WMERRORS_G(logfile_stream) ) {
 		return;
 	}
