@@ -27,6 +27,7 @@ ZEND_BEGIN_MODULE_GLOBALS(wmerrors)
 	char * logging_file;
 	int recursion_guard;
 	int enabled;
+	php_stream *logfile_stream;
 ZEND_END_MODULE_GLOBALS(wmerrors)
 
 

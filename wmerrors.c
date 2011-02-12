@@ -57,6 +57,7 @@ static void php_wmerrors_init_globals(zend_wmerrors_globals *wmerrors_globals)
 {
 	wmerrors_globals->message_file = NULL;
 	wmerrors_globals->logging_file = NULL;
+	wmerrors_globals->logfile_stream = NULL;
 }
 
 PHP_MINIT_FUNCTION(wmerrors)
@@ -143,9 +144,14 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 	WMERRORS_G(old_error_cb)(type, error_filename, error_lineno, format, args);
 }
 
+static int wmerrors_write_trace(const char *str, uint str_length) {
+	php_write((void *)str, str_length TSRMLS_CC);
+	php_stream_write(WMERRORS_G(logfile_stream), str, str_length TSRMLS_CC);
+}
+
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC)
 {
-	php_stream *stream, *log_stream;
+	php_stream *stream;
 	char *message, *p;
 	int message_len;
 	long maxlen = PHP_STREAM_COPY_ALL;
@@ -153,6 +159,7 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 	int tmp1_len, tmp2_len;
 	smart_str expanded = {0};
 	va_list my_args;
+	zval *trace;
 
 	/* Is there a sane message_file? */
 	if (!WMERRORS_G(message_file) || *WMERRORS_G(message_file) == '\0') {
@@ -167,10 +174,10 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 	}
 
 	/* Try opening the logging file */
-	log_stream = NULL;
+	WMERRORS_G(logfile_stream) = NULL;
 	if (WMERRORS_G(logging_file) && *WMERRORS_G(logging_file) != '\0')
 	{
-		log_stream = php_stream_open_wrapper(WMERRORS_G(logging_file), "ab",
+		WMERRORS_G(logfile_stream) = php_stream_open_wrapper(WMERRORS_G(logging_file), "ab",
 			ENFORCE_SAFE_MODE | REPORT_ERRORS, NULL);
 	}
 	
@@ -224,8 +231,8 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 	/* Write the message out */
 	if (expanded.c) {
 		/*php_write(expanded.c, expanded.len TSRMLS_CC);*/
-		if (log_stream) {
-			php_stream_write(log_stream, expanded.c, expanded.len TSRMLS_CC);
+		if (WMERRORS_G(logfile_stream)) {
+			php_stream_write(WMERRORS_G(logfile_stream), expanded.c, expanded.len TSRMLS_CC);
 		}
 		php_write(expanded.c, expanded.len TSRMLS_CC);
 	}
@@ -234,6 +241,13 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 	smart_str_free(&expanded);
 	efree(message);
 	va_end(my_args);
+	
+	/* Write a backtrace */
+	ALLOC_ZVAL(trace);
+	Z_UNSET_ISREF_P(trace);
+	Z_SET_REFCOUNT_P(trace, 0);
+	zend_fetch_debug_backtrace(trace, 0, 0 TSRMLS_CC);
+	zend_print_zval_r_ex(wmerrors_write_trace, trace, 4);
 }
 
 
