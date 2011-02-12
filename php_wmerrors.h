@@ -22,11 +22,11 @@ PHP_RSHUTDOWN_FUNCTION(wmerrors);
 PHP_MINFO_FUNCTION(wmerrors);
 
 ZEND_BEGIN_MODULE_GLOBALS(wmerrors)
-	void (*old_error_cb)(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
 	char * message_file;
 	char * logging_file;
 	int recursion_guard;
 	int enabled;
+	long int log_level;
 	php_stream *logfile_stream;
 ZEND_END_MODULE_GLOBALS(wmerrors)
 
