@@ -63,7 +63,6 @@ static void php_wmerrors_init_globals(zend_wmerrors_globals *wmerrors_globals)
 	wmerrors_globals->message_file = NULL;
 	wmerrors_globals->logging_file = NULL;
 	wmerrors_globals->log_level = 0;
-	wmerrors_globals->log_buffer.c = NULL;
 }
 
 PHP_MINIT_FUNCTION(wmerrors)
@@ -88,6 +87,7 @@ PHP_MSHUTDOWN_FUNCTION(wmerrors)
 PHP_RINIT_FUNCTION(wmerrors)
 {
 	WMERRORS_G(recursion_guard) = 0;
+	WMERRORS_G(log_buffer).c = NULL;
 	return SUCCESS;
 }
 
