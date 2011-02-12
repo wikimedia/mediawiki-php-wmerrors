@@ -62,6 +62,7 @@ static void php_wmerrors_init_globals(zend_wmerrors_globals *wmerrors_globals)
 	wmerrors_globals->message_file = NULL;
 	wmerrors_globals->logging_file = NULL;
 	wmerrors_globals->log_level = 0;
+	wmerrors_globals->log_buffer.c = NULL;
 }
 
 PHP_MINIT_FUNCTION(wmerrors)
@@ -160,7 +161,7 @@ static php_stream * open_logging_file(const char* stream_name) {
 	int err; char *errstr = NULL;
 	struct timeval tv;
 	
-	if ( strncmp( stream_name, "tcp://", 6 ) ) {
+	if ( strncmp( stream_name, "tcp://", 6 ) && strncmp( stream_name, "udp://", 6 ) ) {
 		/* Is it a wrapper? */
 		stream = php_stream_open_wrapper(stream_name, "ab", ENFORCE_SAFE_MODE | REPORT_ERRORS, NULL);
 	} else {
@@ -179,16 +180,18 @@ static php_stream * open_logging_file(const char* stream_name) {
 }
 
 /* Callback for zend_print_zval_r_ex()
- * Gets the file to write from the module global logfile_stream.
+ * Writes to the global buffer
  */
 static int wmerrors_write_trace(const char *str, uint str_length) {
 	TSRMLS_FETCH();
-	return php_stream_write(WMERRORS_G(logfile_stream), str, str_length);
+	smart_str_appendl(&WMERRORS_G(log_buffer), str, str_length);
+	return str_length;
 }
 
 static void wmerrors_log_error(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC) {
 	char *tmp1; zval *trace; char *error_time_str;
 	int tmp1_len; va_list my_args;
+	php_stream *logfile_stream;
 	
 	if ( !WMERRORS_G(enabled) || !WMERRORS_G(log_level) ) {
 		/* Redundant with the caller */
@@ -201,8 +204,8 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	}
 	
 	/* Try opening the logging file */
-	WMERRORS_G(logfile_stream) = open_logging_file( WMERRORS_G(logging_file) );
-	if ( !WMERRORS_G(logfile_stream) ) {
+	logfile_stream = open_logging_file( WMERRORS_G(logging_file) );
+	if ( !logfile_stream ) {
 		return;
 	}
 	
@@ -213,7 +216,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	
 	/* Log the error (log_level >= 1) */
 	error_time_str = php_format_date("d-M-Y H:i:s", 11, time(NULL), 0 TSRMLS_CC);
-	php_stream_printf(WMERRORS_G(logfile_stream) TSRMLS_CC, "[%s UTC] %s: %.*s at %s on line %u%s", error_time_str, error_type_to_string(type), tmp1_len, tmp1, error_filename, error_lineno, PHP_EOL);
+	php_stream_printf(logfile_stream TSRMLS_CC, "[%s UTC] %s: %.*s at %s on line %u%s", error_time_str, error_type_to_string(type), tmp1_len, tmp1, error_filename, error_lineno, PHP_EOL);
 	efree(error_time_str);
 	efree(tmp1);
 	
@@ -223,9 +226,10 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 		zend_fetch_debug_backtrace(trace, 0, 0 TSRMLS_CC);
 		zend_print_zval_r_ex(wmerrors_write_trace, trace, 4 TSRMLS_CC);
 		FREE_ZVAL(trace);
+		php_stream_write(logfile_stream, WMERRORS_G(log_buffer).c, WMERRORS_G(log_buffer).len TSRMLS_CC);
 	}
 	
-	php_stream_close( WMERRORS_G(logfile_stream) );
+	php_stream_close( logfile_stream );
 }
 
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC)

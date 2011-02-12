@@ -15,6 +15,8 @@ extern zend_module_entry wmerrors_module_entry;
 #include "TSRM.h"
 #endif
 
+#include "ext/standard/php_smart_str_public.h"
+
 PHP_MINIT_FUNCTION(wmerrors);
 PHP_MSHUTDOWN_FUNCTION(wmerrors);
 PHP_RINIT_FUNCTION(wmerrors);
@@ -27,7 +29,7 @@ ZEND_BEGIN_MODULE_GLOBALS(wmerrors)
 	int recursion_guard;
 	int enabled;
 	long int log_level;
-	php_stream *logfile_stream;
+	smart_str log_buffer;
 ZEND_END_MODULE_GLOBALS(wmerrors)
 
 
