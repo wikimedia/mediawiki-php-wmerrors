@@ -29,6 +29,7 @@ ZEND_BEGIN_MODULE_GLOBALS(wmerrors)
 	int recursion_guard;
 	int enabled;
 	long int log_level;
+	int ignore_logging_errors;
 	smart_str log_buffer;
 ZEND_END_MODULE_GLOBALS(wmerrors)
 

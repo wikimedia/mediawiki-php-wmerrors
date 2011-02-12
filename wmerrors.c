@@ -53,6 +53,7 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_ENTRY("wmerrors.message_file", "", PHP_INI_ALL, OnUpdateString, message_file, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_ENTRY("wmerrors.logging_file", "", PHP_INI_ALL, OnUpdateString, logging_file, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_ENTRY("wmerrors.log_level", "0", PHP_INI_ALL, OnUpdateLong, log_level, zend_wmerrors_globals, wmerrors_globals)
+	STD_PHP_INI_BOOLEAN("wmerrors.ignore_logging_errors", "0", PHP_INI_ALL, OnUpdateBool, ignore_logging_errors, zend_wmerrors_globals, wmerrors_globals)
 PHP_INI_END()
 
 void (*old_error_cb)(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
@@ -131,7 +132,11 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 			      && type != E_USER_ERROR && type != E_RECOVERABLE_ERROR)
 			|| WMERRORS_G(recursion_guard))
 	{
-		old_error_cb(type, error_filename, error_lineno, format, args);
+		/* recursion_guard != 1 means this is an error in writing to the log file.
+		 * Ignore it if configured to do so.
+		 */
+		if (WMERRORS_G(recursion_guard) == 1 || !WMERRORS_G(ignore_logging_errors))
+			old_error_cb(type, error_filename, error_lineno, format, args);
 		return;
 	}
 	WMERRORS_G(recursion_guard) = 1;
@@ -160,10 +165,14 @@ static php_stream * open_logging_file(const char* stream_name) {
 	php_stream * stream;
 	int err; char *errstr = NULL;
 	struct timeval tv;
+	int flags = ENFORCE_SAFE_MODE;
+	
+	if (!WMERRORS_G(ignore_logging_errors))
+		flags |= REPORT_ERRORS;
 	
 	if ( strncmp( stream_name, "tcp://", 6 ) && strncmp( stream_name, "udp://", 6 ) ) {
 		/* Is it a wrapper? */
-		stream = php_stream_open_wrapper(stream_name, "ab", ENFORCE_SAFE_MODE | REPORT_ERRORS, NULL);
+		stream = php_stream_open_wrapper(stream_name, "ab", flags, NULL);
 	} else {
 		/* Maybe it's a transport? */
 		double timeout = FG(default_socket_timeout);
@@ -172,7 +181,7 @@ static php_stream * open_logging_file(const char* stream_name) {
 		tv.tv_sec = conv / 1000000;
 		tv.tv_usec = conv % 1000000;
 		
-		stream = php_stream_xport_create(stream_name, strlen(stream_name), ENFORCE_SAFE_MODE | REPORT_ERRORS,
+		stream = php_stream_xport_create(stream_name, strlen(stream_name), flags,
 			STREAM_XPORT_CLIENT | STREAM_XPORT_CONNECT, NULL, &tv, NULL, &errstr, &err);
 	}
 		
@@ -204,7 +213,10 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	}
 	
 	/* Try opening the logging file */
+	/* Set recursion_guard==2 whenever we're doing something to the log file */
+	WMERRORS_G(recursion_guard) = 2;
 	logfile_stream = open_logging_file( WMERRORS_G(logging_file) );
+	WMERRORS_G(recursion_guard) = 1;
 	if ( !logfile_stream ) {
 		return;
 	}
@@ -226,7 +238,10 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 		zend_fetch_debug_backtrace(trace, 0, 0 TSRMLS_CC);
 		zend_print_zval_r_ex(wmerrors_write_trace, trace, 4 TSRMLS_CC);
 		FREE_ZVAL(trace);
+		
+		WMERRORS_G(recursion_guard) = 2;
 		php_stream_write(logfile_stream, WMERRORS_G(log_buffer).c, WMERRORS_G(log_buffer).len TSRMLS_CC);
+		WMERRORS_G(recursion_guard) = 1;
 	}
 	
 	php_stream_close( logfile_stream );
