@@ -242,6 +242,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 		WMERRORS_G(recursion_guard) = 2;
 		php_stream_write(logfile_stream, WMERRORS_G(log_buffer).c, WMERRORS_G(log_buffer).len TSRMLS_CC);
 		WMERRORS_G(recursion_guard) = 1;
+		smart_str_free( &WMERRORS_G(log_buffer) ); /* Free and reset the buffer */
 	}
 	
 	php_stream_close( logfile_stream );
