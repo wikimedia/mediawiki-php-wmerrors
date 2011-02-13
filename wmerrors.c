@@ -17,6 +17,7 @@
 
 void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC);
+void wmerrors_get_backtrace(smart_str *s);
 
 
 ZEND_DECLARE_MODULE_GLOBALS(wmerrors)
@@ -118,6 +119,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 
 void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args)
 {
+	smart_str new_filename = {0};
 	TSRMLS_FETCH();
 	
 	/* Do not call the custom error handling if:
@@ -153,12 +155,65 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 		/* Log the error */
 		wmerrors_log_error(type, error_filename, error_lineno, format, args TSRMLS_CC);
 	}
+	
+	/* Put a concise backtrace in the normal output */
+	/* TODO: Make configurable */
+	wmerrors_get_backtrace(&new_filename);
+	smart_str_appendl(&new_filename, error_filename, strlen(error_filename));
+	smart_str_0(&new_filename);
 
 	WMERRORS_G(recursion_guard) = 0;
 	zend_set_memory_limit(PG(memory_limit));
 
 	/* Pass through */
-	old_error_cb(type, error_filename, error_lineno, format, args);
+	old_error_cb(type, new_filename.c, error_lineno, format, args);
+	smart_str_free(&new_filename);
+}
+
+/* Obtain a concisely formatted backtrace */
+void wmerrors_get_backtrace(smart_str *s) {
+	zval *trace, **entry, **file, **line, *line_copy;
+	HashPosition pos;
+	char *basename;
+	size_t basename_len;
+	int use_copy;
+	
+	TSRMLS_FETCH();
+	ALLOC_INIT_ZVAL(trace);
+	zend_fetch_debug_backtrace(trace, 0, 0 TSRMLS_CC);
+	
+	if (!trace || Z_TYPE_P(trace) != IS_ARRAY) {
+		/* Not supposed to happen */
+		return;
+	}
+	zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(trace), &pos);
+	while (zend_hash_get_current_data_ex(Z_ARRVAL_P(trace), (void **)&entry, &pos) == SUCCESS) {
+		if (!entry || !*entry || Z_TYPE_PP(entry) != IS_ARRAY) {
+			/* Not supposed to happen */
+			smart_str_appendl(s, "?!? ", sizeof("?!? "));
+			continue;
+		}
+		zend_hash_find(Z_ARRVAL_PP(entry), "file", sizeof("file"), (void **)&file);
+		zend_hash_find(Z_ARRVAL_PP(entry), "line", sizeof("line"), (void **)&line);
+		
+		if(!file || !*file || Z_TYPE_PP(file) != IS_STRING || !line || !*line || Z_TYPE_PP(line) != IS_LONG) {
+			/* Not supposed to happen */
+			smart_str_appendl(s, "?!?!? ", sizeof("?!?!? "));
+			continue;
+		}
+		php_basename(Z_STRVAL_PP(file), Z_STRLEN_PP(file), NULL, 0, &basename, &basename_len TSRMLS_CC);
+		ALLOC_INIT_ZVAL(line_copy);
+		zend_make_printable_zval(*line, line_copy, &use_copy);
+		smart_str_appendl(s, basename, basename_len);
+		smart_str_appendc(s, ':');
+		smart_str_appendl(s, Z_STRVAL_P((use_copy ? line_copy : *line)), Z_STRLEN_P((use_copy ? line_copy : *line)));
+		smart_str_appendc(s, ' ');
+		
+		efree(basename);
+		FREE_ZVAL(line_copy);
+		zend_hash_move_forward_ex(Z_ARRVAL_P(trace), &pos);
+	}
+	FREE_ZVAL(trace);
 }
 
 static php_stream * open_logging_file(const char* stream_name) {
