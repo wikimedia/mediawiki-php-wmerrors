@@ -55,6 +55,7 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_ENTRY("wmerrors.logging_file", "", PHP_INI_ALL, OnUpdateString, logging_file, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_ENTRY("wmerrors.log_level", "0", PHP_INI_ALL, OnUpdateLong, log_level, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_BOOLEAN("wmerrors.ignore_logging_errors", "0", PHP_INI_ALL, OnUpdateBool, ignore_logging_errors, zend_wmerrors_globals, wmerrors_globals)
+	STD_PHP_INI_BOOLEAN("wmerrors.concise_backtrace_in_error_log", "0", PHP_INI_ALL, OnUpdateBool, concise_backtrace_in_error_log, zend_wmerrors_globals, wmerrors_globals)
 PHP_INI_END()
 
 void (*old_error_cb)(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
@@ -157,8 +158,8 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 	}
 	
 	/* Put a concise backtrace in the normal output */
-	/* TODO: Make configurable */
-	wmerrors_get_backtrace(&new_filename);
+	if (WMERRORS_G(concise_backtrace_in_error_log))
+		wmerrors_get_backtrace(&new_filename);
 	smart_str_appendl(&new_filename, error_filename, strlen(error_filename));
 	smart_str_0(&new_filename);
 
