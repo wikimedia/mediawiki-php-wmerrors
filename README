@@ -36,14 +36,14 @@ wmerrors.log_file
 
     The name of a file to send error reports to. This is similar to PHP's 
     error_log, except that it provides several additional features. Logging to
-    a TCP or UDP network socket is supported, using a URL of the form:
+    a TCP or UDP network socket is also supported, using a URL of the form:
 
        udp://<host>:<port>
        tcp://<host>:<port>
 
     For example:
 
-       udp://logger:8420
+       udp://logger.example.com:8420
 
 wmerrors.log_backtrace
 

@@ -12,10 +12,11 @@
 #include "ext/standard/file.h" /* for file_globals aka. FG() */
 #include "ext/date/php_date.h" /* for php_format_date */
 #include "ext/standard/php_smart_str.h" /* for smart_str */
+#include "ext/standard/php_string.h" /* for php_basename() */
 #include "ext/standard/html.h" /* for php_escape_html_entities */
 #include "Zend/zend_builtin_functions.h" /* for zend_fetch_debug_backtrace */
 
-void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
+static void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC);
 static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC);
 static void write_full_backtrace(php_stream *logfile_stream);
@@ -117,9 +118,9 @@ PHP_MINFO_FUNCTION(wmerrors)
 static const char* error_type_to_string(int type);
 static void wmerrors_log_error(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC);
 
-void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args)
+static void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args)
 {
-	smart_str new_filename = {0};
+	smart_str new_filename = { NULL };
 	TSRMLS_FETCH();
 	
 	/* Do not call the custom error handling if:
@@ -291,7 +292,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 /**
  * Write a full backtrace to a stream
  */
-void write_full_backtrace(php_stream *logfile_stream) {
+static void write_full_backtrace(php_stream *logfile_stream) {
 	zval *trace;
 	zend_fcall_info fci = empty_fcall_info;
 	zend_fcall_info_cache fcc = empty_fcall_info_cache;
@@ -338,7 +339,7 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 	long maxlen = PHP_STREAM_COPY_ALL;
 	char * tmp1, *tmp2;
 	int tmp1_len, tmp2_len;
-	smart_str expanded = {0};
+	smart_str expanded = { NULL };
 	va_list my_args;
 
 	/* Is there a sane message_file? */
