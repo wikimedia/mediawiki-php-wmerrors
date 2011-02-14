@@ -17,8 +17,8 @@
 
 void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC);
-void wmerrors_get_backtrace(smart_str *s);
-
+static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC);
+static void write_full_backtrace(php_stream *logfile_stream);
 
 ZEND_DECLARE_MODULE_GLOBALS(wmerrors)
 
@@ -52,10 +52,10 @@ ZEND_GET_MODULE(wmerrors)
 PHP_INI_BEGIN()
 	STD_PHP_INI_BOOLEAN("wmerrors.enabled", "0", PHP_INI_ALL, OnUpdateBool, enabled, zend_wmerrors_globals, wmerrors_globals )
 	STD_PHP_INI_ENTRY("wmerrors.message_file", "", PHP_INI_ALL, OnUpdateString, message_file, zend_wmerrors_globals, wmerrors_globals)
-	STD_PHP_INI_ENTRY("wmerrors.logging_file", "", PHP_INI_ALL, OnUpdateString, logging_file, zend_wmerrors_globals, wmerrors_globals)
-	STD_PHP_INI_ENTRY("wmerrors.log_level", "0", PHP_INI_ALL, OnUpdateLong, log_level, zend_wmerrors_globals, wmerrors_globals)
+	STD_PHP_INI_ENTRY("wmerrors.log_file", "", PHP_INI_ALL, OnUpdateString, log_file, zend_wmerrors_globals, wmerrors_globals)
+	STD_PHP_INI_BOOLEAN("wmerrors.log_backtrace", "0", PHP_INI_ALL, OnUpdateBool, log_backtrace, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_BOOLEAN("wmerrors.ignore_logging_errors", "0", PHP_INI_ALL, OnUpdateBool, ignore_logging_errors, zend_wmerrors_globals, wmerrors_globals)
-	STD_PHP_INI_BOOLEAN("wmerrors.concise_backtrace_in_error_log", "0", PHP_INI_ALL, OnUpdateBool, concise_backtrace_in_error_log, zend_wmerrors_globals, wmerrors_globals)
+	STD_PHP_INI_BOOLEAN("wmerrors.backtrace_in_php_error_message", "0", PHP_INI_ALL, OnUpdateBool, backtrace_in_php_error_message, zend_wmerrors_globals, wmerrors_globals)
 PHP_INI_END()
 
 void (*old_error_cb)(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
@@ -63,8 +63,8 @@ void (*old_error_cb)(int type, const char *error_filename, const uint error_line
 static void php_wmerrors_init_globals(zend_wmerrors_globals *wmerrors_globals)
 {
 	wmerrors_globals->message_file = NULL;
-	wmerrors_globals->logging_file = NULL;
-	wmerrors_globals->log_level = 0;
+	wmerrors_globals->log_file = NULL;
+	wmerrors_globals->log_backtrace = 0;
 }
 
 PHP_MINIT_FUNCTION(wmerrors)
@@ -89,7 +89,6 @@ PHP_MSHUTDOWN_FUNCTION(wmerrors)
 PHP_RINIT_FUNCTION(wmerrors)
 {
 	WMERRORS_G(recursion_guard) = 0;
-	WMERRORS_G(log_buffer).c = NULL;
 	return SUCCESS;
 }
 
@@ -152,14 +151,14 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 		wmerrors_show_message(type, error_filename, error_lineno, format, args TSRMLS_CC);
 	}
 
-	if ( WMERRORS_G(enabled) && WMERRORS_G(log_level) ) {
+	if ( WMERRORS_G(enabled) ) {
 		/* Log the error */
 		wmerrors_log_error(type, error_filename, error_lineno, format, args TSRMLS_CC);
 	}
 	
 	/* Put a concise backtrace in the normal output */
-	if (WMERRORS_G(concise_backtrace_in_error_log))
-		wmerrors_get_backtrace(&new_filename);
+	if (WMERRORS_G(backtrace_in_php_error_message))
+		wmerrors_get_concise_backtrace(&new_filename TSRMLS_CC);
 	smart_str_appendl(&new_filename, error_filename, strlen(error_filename));
 	smart_str_0(&new_filename);
 
@@ -172,14 +171,13 @@ void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, 
 }
 
 /* Obtain a concisely formatted backtrace */
-void wmerrors_get_backtrace(smart_str *s) {
+static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC) {
 	zval *trace, **entry, **file, **line, *line_copy;
 	HashPosition pos;
 	char *basename;
 	size_t basename_len;
 	int use_copy;
 	
-	TSRMLS_FETCH();
 	ALLOC_INIT_ZVAL(trace);
 	zend_fetch_debug_backtrace(trace, 0, 0 TSRMLS_CC);
 	
@@ -217,7 +215,7 @@ void wmerrors_get_backtrace(smart_str *s) {
 	FREE_ZVAL(trace);
 }
 
-static php_stream * open_logging_file(const char* stream_name) {
+static php_stream * open_log_file(const char* stream_name) {
 	php_stream * stream;
 	int err; char *errstr = NULL;
 	struct timeval tv;
@@ -228,7 +226,7 @@ static php_stream * open_logging_file(const char* stream_name) {
 	
 	if ( strncmp( stream_name, "tcp://", 6 ) && strncmp( stream_name, "udp://", 6 ) ) {
 		/* Is it a wrapper? */
-		stream = php_stream_open_wrapper(stream_name, "ab", flags, NULL);
+		stream = php_stream_open_wrapper((char*)stream_name, "ab", flags, NULL);
 	} else {
 		/* Maybe it's a transport? */
 		double timeout = FG(default_socket_timeout);
@@ -244,26 +242,19 @@ static php_stream * open_logging_file(const char* stream_name) {
 	return stream;
 }
 
-/* Callback for zend_print_zval_r_ex()
- * Writes to the global buffer
- */
-static int wmerrors_write_trace(const char *str, uint str_length) {
-	TSRMLS_FETCH();
-	smart_str_appendl(&WMERRORS_G(log_buffer), str, str_length);
-	return str_length;
-}
-
 static void wmerrors_log_error(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC) {
-	char *tmp1; zval *trace; char *error_time_str;
-	int tmp1_len; va_list my_args;
+	char *tmp1;
+	int tmp1_len;
+	char *error_time_str;
+	va_list my_args;
 	php_stream *logfile_stream;
 	
-	if ( !WMERRORS_G(enabled) || !WMERRORS_G(log_level) ) {
+	if ( !WMERRORS_G(enabled) ) {
 		/* Redundant with the caller */
 		return;
 	}
 	
-	if ( !WMERRORS_G(logging_file) || *WMERRORS_G(logging_file) == '\0') {
+	if ( !WMERRORS_G(log_file) || *WMERRORS_G(log_file) == '\0') {
 		/* No log file configured */
 		return;
 	}
@@ -271,7 +262,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	/* Try opening the logging file */
 	/* Set recursion_guard==2 whenever we're doing something to the log file */
 	WMERRORS_G(recursion_guard) = 2;
-	logfile_stream = open_logging_file( WMERRORS_G(logging_file) );
+	logfile_stream = open_log_file( WMERRORS_G(log_file) );
 	WMERRORS_G(recursion_guard) = 1;
 	if ( !logfile_stream ) {
 		return;
@@ -282,26 +273,61 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	tmp1_len = vspprintf(&tmp1, 0, format, my_args);
 	va_end(my_args);
 	
-	/* Log the error (log_level >= 1) */
-	error_time_str = php_format_date("d-M-Y H:i:s", 11, time(NULL), 0 TSRMLS_CC);
-	php_stream_printf(logfile_stream TSRMLS_CC, "[%s UTC] %s: %.*s at %s on line %u%s", error_time_str, error_type_to_string(type), tmp1_len, tmp1, error_filename, error_lineno, PHP_EOL);
+	/* Log the error */
+	error_time_str = php_format_date("d-M-Y H:i:s", 11, time(NULL), 1 TSRMLS_CC);
+	php_stream_printf(logfile_stream TSRMLS_CC, "[%s] %s: %.*s at %s on line %u%s", error_time_str, error_type_to_string(type), tmp1_len, tmp1, error_filename, error_lineno, PHP_EOL);
 	efree(error_time_str);
 	efree(tmp1);
 	
 	/* Write a backtrace */
-	if ( WMERRORS_G(log_level) >= 2 ) {
-		ALLOC_INIT_ZVAL(trace);
-		zend_fetch_debug_backtrace(trace, 0, 0 TSRMLS_CC);
-		zend_print_zval_r_ex(wmerrors_write_trace, trace, 4 TSRMLS_CC);
-		FREE_ZVAL(trace);
-		
-		WMERRORS_G(recursion_guard) = 2;
-		php_stream_write(logfile_stream, WMERRORS_G(log_buffer).c, WMERRORS_G(log_buffer).len TSRMLS_CC);
-		WMERRORS_G(recursion_guard) = 1;
-		smart_str_free( &WMERRORS_G(log_buffer) ); /* Free and reset the buffer */
+	if ( WMERRORS_G(log_backtrace) ) {
+		write_full_backtrace(logfile_stream TSRMLS_CC);
 	}
 	
 	php_stream_close( logfile_stream );
+}
+
+
+/**
+ * Write a full backtrace to a stream
+ */
+void write_full_backtrace(php_stream *logfile_stream) {
+	zval *trace;
+	zend_fcall_info fci = empty_fcall_info;
+	zend_fcall_info_cache fcc = empty_fcall_info_cache;
+	zval *backtrace_retval, backtrace_fname;
+	int status;
+
+	/* Start an output buffer */
+	php_start_ob_buffer(NULL, 0, 1 TSRMLS_CC);
+
+	/* Call debug_print_backtrace */
+	ZVAL_STRING(&backtrace_fname, "debug_print_backtrace", 1);
+	status = zend_fcall_info_init(&backtrace_fname, IS_CALLABLE_STRICT, &fci, &fcc, NULL, NULL);
+	if (status != SUCCESS) {
+		zval_dtor(&backtrace_fname);
+		return;
+	}
+
+	fci.retval_ptr_ptr = &backtrace_retval;
+	zend_call_function(&fci, &fcc TSRMLS_CC);
+	if (backtrace_retval) {
+		zval_ptr_dtor(&backtrace_retval);
+	}
+	zval_dtor(&backtrace_fname);
+
+	/* Get the trace */
+	ALLOC_INIT_ZVAL(trace);
+	php_ob_get_buffer(trace TSRMLS_CC);
+	php_end_ob_buffer(0, 0 TSRMLS_CC);
+	
+	/* Write it */
+	convert_to_string(trace);
+	WMERRORS_G(recursion_guard) = 2;
+	php_stream_write(logfile_stream, Z_STRVAL_P(trace), Z_STRLEN_P(trace) TSRMLS_CC);
+	WMERRORS_G(recursion_guard) = 1;
+
+	zval_ptr_dtor(&trace);
 }
 
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC)
@@ -386,30 +412,34 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 }
 
 static const char* error_type_to_string(int type) {
-	int i;
-	#define ErrorType(x) {x, #x}
-	static struct { int type; const char* name; } error_names[] = {
-		ErrorType(E_ERROR),
-		ErrorType(E_CORE_ERROR),
-		ErrorType(E_COMPILE_ERROR),
-		ErrorType(E_USER_ERROR),
-		ErrorType(E_RECOVERABLE_ERROR),
-		ErrorType(E_WARNING),
-		ErrorType(E_CORE_WARNING),
-		ErrorType(E_COMPILE_WARNING),
-		ErrorType(E_USER_WARNING),
-		ErrorType(E_PARSE),
-		ErrorType(E_NOTICE),
-		ErrorType(E_USER_NOTICE),
-		ErrorType(E_STRICT),
-		ErrorType(E_DEPRECATED),
-		ErrorType(E_USER_DEPRECATED)
-	};
-	
-	for (i=0; i < sizeof(error_names)/sizeof(error_names[0]); i++) {
-		if (type == error_names[i].type) {
-			return error_names[i].name;
-		}
+	/** Copied from php_error_cb() */
+	switch (type) {
+		case E_ERROR:
+		case E_CORE_ERROR:
+		case E_COMPILE_ERROR:
+		case E_USER_ERROR:
+			return "Fatal error";
+		case E_RECOVERABLE_ERROR:
+			return "Catchable fatal error";
+		case E_WARNING:
+		case E_CORE_WARNING:
+		case E_COMPILE_WARNING:
+		case E_USER_WARNING:
+			return "Warning";
+			break;
+		case E_PARSE:
+			return "Parse error";
+		case E_NOTICE:
+		case E_USER_NOTICE:
+			return "Notice";
+		case E_STRICT:
+			return "Strict Standards";
+		case E_DEPRECATED:
+		case E_USER_DEPRECATED:
+			return "Deprecated";
+		default:
+			return "Unknown error";
 	}
-	return "Unknown error";
 }
+
+

@@ -25,13 +25,12 @@ PHP_MINFO_FUNCTION(wmerrors);
 
 ZEND_BEGIN_MODULE_GLOBALS(wmerrors)
 	char * message_file;
-	char * logging_file;
+	char * log_file;
 	int recursion_guard;
 	int enabled;
-	long int log_level;
+	int log_backtrace;
 	int ignore_logging_errors;
-	int concise_backtrace_in_error_log;
-	smart_str log_buffer;
+	int backtrace_in_php_error_message;
 ZEND_END_MODULE_GLOBALS(wmerrors)
 
 
