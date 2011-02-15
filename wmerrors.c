@@ -41,7 +41,7 @@ zend_module_entry wmerrors_module_entry = {
 	PHP_RSHUTDOWN(wmerrors),
 	PHP_MINFO(wmerrors),
 #if ZEND_MODULE_API_NO >= 20010901
-	"0.2",
+	"1.1.0",
 #endif
 	STANDARD_MODULE_PROPERTIES
 };
@@ -489,9 +489,11 @@ static const char* wmerrors_error_type_to_string(int type) {
 			return "Notice";
 		case E_STRICT:
 			return "Strict Standards";
+#ifdef E_DEPRECATED
 		case E_DEPRECATED:
 		case E_USER_DEPRECATED:
 			return "Deprecated";
+#endif
 		default:
 			return "Unknown error";
 	}
