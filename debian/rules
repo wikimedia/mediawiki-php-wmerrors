@@ -16,7 +16,7 @@ DEB_HOST_GNU_TYPE   ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
 
 
-config.status: configure
+config.status:
 	dh_testdir
 	# Add here commands to configure the package.
 ifneq "$(wildcard /usr/share/misc/config.sub)" ""
@@ -59,7 +59,7 @@ install: build
 	dh_installdirs
 
 	# Add here commands to install the package into debian/wmerrors.
-	INSTALL_ROOT=$(CURDIR)/debian/wmerrors $(MAKE) install
+	INSTALL_ROOT=$(CURDIR)/debian/php5-wmerrors $(MAKE) install
 
 
 # Build architecture-independent files here.
