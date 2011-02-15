@@ -312,7 +312,7 @@ static void wmerrors_write_full_backtrace(php_stream *logfile_stream) {
 	if (!exception_class) {
 		return;
 	}
-	ALLOC_ZVAL(exception);
+	MAKE_STD_ZVAL(exception);
 	object_init_ex(exception, exception_class);
 
 	/* Call Exception::getTraceAsString() */
