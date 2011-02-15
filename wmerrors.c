@@ -19,7 +19,8 @@
 static void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC);
 static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC);
-static void write_full_backtrace(php_stream *logfile_stream);
+static void wmerrors_write_full_backtrace(php_stream *logfile_stream);
+static void wmerrors_write_request_info(php_stream *logfile_stream TSRMLS_DC);
 
 ZEND_DECLARE_MODULE_GLOBALS(wmerrors)
 
@@ -115,7 +116,7 @@ PHP_MINFO_FUNCTION(wmerrors)
 #define WM_ERROR_HANDLING PG(error_handling)
 #endif
 
-static const char* error_type_to_string(int type);
+static const char* wmerrors_error_type_to_string(int type);
 static void wmerrors_log_error(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC);
 
 static void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args)
@@ -216,7 +217,7 @@ static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC) {
 	FREE_ZVAL(trace);
 }
 
-static php_stream * open_log_file(const char* stream_name) {
+static php_stream * wmerrors_open_log_file(const char* stream_name) {
 	php_stream * stream;
 	int err; char *errstr = NULL;
 	struct timeval tv;
@@ -263,7 +264,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	/* Try opening the logging file */
 	/* Set recursion_guard==2 whenever we're doing something to the log file */
 	WMERRORS_G(recursion_guard) = 2;
-	logfile_stream = open_log_file( WMERRORS_G(log_file) );
+	logfile_stream = wmerrors_open_log_file( WMERRORS_G(log_file) );
 	WMERRORS_G(recursion_guard) = 1;
 	if ( !logfile_stream ) {
 		return;
@@ -276,13 +277,19 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	
 	/* Log the error */
 	error_time_str = php_format_date("d-M-Y H:i:s", 11, time(NULL), 1 TSRMLS_CC);
-	php_stream_printf(logfile_stream TSRMLS_CC, "[%s] %s: %.*s at %s on line %u%s", error_time_str, error_type_to_string(type), tmp1_len, tmp1, error_filename, error_lineno, PHP_EOL);
+	php_stream_printf(logfile_stream TSRMLS_CC, "[%s] %s: %.*s at %s on line %u%s", 
+			error_time_str, wmerrors_error_type_to_string(type), tmp1_len, tmp1, error_filename, 
+			error_lineno, PHP_EOL);
 	efree(error_time_str);
 	efree(tmp1);
 	
+	/* Write the request info */
+	wmerrors_write_request_info(logfile_stream TSRMLS_CC);
+
 	/* Write a backtrace */
 	if ( WMERRORS_G(log_backtrace) ) {
-		write_full_backtrace(logfile_stream TSRMLS_CC);
+		php_stream_printf(logfile_stream TSRMLS_CC, "Backtrace:%s", PHP_EOL);
+		wmerrors_write_full_backtrace(logfile_stream TSRMLS_CC);
 	}
 	
 	php_stream_close( logfile_stream );
@@ -290,38 +297,35 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 
 
 /**
- * Write a full backtrace to a stream
+ * Write a backtrace to a stream
  */
-static void write_full_backtrace(php_stream *logfile_stream) {
-	zval *trace;
-	zend_fcall_info fci = empty_fcall_info;
-	zend_fcall_info_cache fcc = empty_fcall_info_cache;
-	zval *backtrace_retval, backtrace_fname;
+static void wmerrors_write_full_backtrace(php_stream *logfile_stream) {
+	zval *trace = NULL;
+	zval backtrace_fname;
 	int status;
+	zend_class_entry * exception_class;
+	zval *exception;
 
-	/* Start an output buffer */
-	php_start_ob_buffer(NULL, 0, 1 TSRMLS_CC);
+	/* Create an Exception object */
+	exception_class = zend_fetch_class("Exception", sizeof("Exception") - 1, 
+		ZEND_FETCH_CLASS_DEFAULT TSRMLS_CC);
+	if (!exception_class) {
+		return;
+	}
+	ALLOC_ZVAL(exception);
+	object_init_ex(exception, exception_class);
 
-	/* Call debug_print_backtrace */
-	ZVAL_STRING(&backtrace_fname, "debug_print_backtrace", 1);
-	status = zend_fcall_info_init(&backtrace_fname, IS_CALLABLE_STRICT, &fci, &fcc, NULL, NULL);
+	/* Call Exception::getTraceAsString() */
+	ZVAL_STRING(&backtrace_fname, "getTraceAsString", 1);
+	status = call_user_function_ex(EG(function_table), &exception, &backtrace_fname, 
+		&trace, 0, NULL, 0, NULL TSRMLS_CC);
+
+	zval_dtor(&backtrace_fname);
+	zval_ptr_dtor(&exception);
 	if (status != SUCCESS) {
-		zval_dtor(&backtrace_fname);
 		return;
 	}
 
-	fci.retval_ptr_ptr = &backtrace_retval;
-	zend_call_function(&fci, &fcc TSRMLS_CC);
-	if (backtrace_retval) {
-		zval_ptr_dtor(&backtrace_retval);
-	}
-	zval_dtor(&backtrace_fname);
-
-	/* Get the trace */
-	ALLOC_INIT_ZVAL(trace);
-	php_ob_get_buffer(trace TSRMLS_CC);
-	php_end_ob_buffer(0, 0 TSRMLS_CC);
-	
 	/* Write it */
 	convert_to_string(trace);
 	WMERRORS_G(recursion_guard) = 2;
@@ -329,6 +333,56 @@ static void write_full_backtrace(php_stream *logfile_stream) {
 	WMERRORS_G(recursion_guard) = 1;
 
 	zval_ptr_dtor(&trace);
+}
+
+/**
+ * Write the current URL to a stream
+ */
+static void wmerrors_write_request_info(php_stream *logfile_stream TSRMLS_DC) {
+	HashTable * server_ht;
+	zval **info;
+	smart_str s = {NULL};
+
+	server_ht = Z_ARRVAL_P(PG(http_globals)[TRACK_VARS_SERVER]);
+
+	/* Method */
+	if (SG(request_info).request_method) {
+		smart_str_appends(&s, "Method: ");
+		smart_str_appends(&s, SG(request_info).request_method);
+		smart_str_appends(&s, PHP_EOL);
+	}
+
+	/* URL */
+	smart_str_appends(&s, "URL: ");
+	if (zend_hash_find(server_ht, "HTTPS", sizeof("HTTPS"), (void**)(&info)) == SUCCESS) {
+		smart_str_appends(&s, "https://");
+	} else {
+		smart_str_appends(&s, "http://");
+	}
+	if (zend_hash_find(server_ht, "HTTP_HOST", sizeof("HTTP_HOST"), (void**)(&info)) == SUCCESS) {
+		smart_str_appendl(&s, Z_STRVAL_PP(info), Z_STRLEN_PP(info));
+	} else {
+		smart_str_appends(&s, "[unknown-host]");
+	}
+	if (SG(request_info).request_uri) {
+		smart_str_appends(&s, SG(request_info).request_uri);
+	}
+	if (SG(request_info).query_string) {
+		smart_str_appendc(&s, '?');
+		smart_str_appends(&s, SG(request_info).query_string);
+	}
+	smart_str_appends(&s, PHP_EOL);
+
+	/* Cookie */
+	if (SG(request_info).cookie_data) {
+		smart_str_appends(&s, "Cookie: ");
+		smart_str_appends(&s, SG(request_info).cookie_data);
+		smart_str_appends(&s, PHP_EOL);
+	}
+	if (s.c) {
+		php_stream_write(logfile_stream, s.c, s.len TSRMLS_CC);
+	}
+	smart_str_free(&s);
 }
 
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC)
@@ -412,7 +466,7 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 	va_end(my_args);
 }
 
-static const char* error_type_to_string(int type) {
+static const char* wmerrors_error_type_to_string(int type) {
 	/** Copied from php_error_cb() */
 	switch (type) {
 		case E_ERROR:
