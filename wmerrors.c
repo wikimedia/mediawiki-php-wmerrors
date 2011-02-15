@@ -41,7 +41,7 @@ zend_module_entry wmerrors_module_entry = {
 	PHP_RSHUTDOWN(wmerrors),
 	PHP_MINFO(wmerrors),
 #if ZEND_MODULE_API_NO >= 20010901
-	"1.1.0",
+	"1.1.1",
 #endif
 	STANDARD_MODULE_PROPERTIES
 };
@@ -330,6 +330,7 @@ static void wmerrors_write_full_backtrace(php_stream *logfile_stream) {
 	convert_to_string(trace);
 	WMERRORS_G(recursion_guard) = 2;
 	php_stream_write(logfile_stream, Z_STRVAL_P(trace), Z_STRLEN_P(trace) TSRMLS_CC);
+	php_stream_printf(logfile_stream, PHP_EOL TSRMLS_CC);
 	WMERRORS_G(recursion_guard) = 1;
 
 	zval_ptr_dtor(&trace);
