@@ -188,14 +188,17 @@ static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC) {
 		if (!entry || !*entry || Z_TYPE_PP(entry) != IS_ARRAY) {
 			/* Not supposed to happen */
 			smart_str_appendl(s, "?!? ", sizeof("?!? "));
+			zend_hash_move_forward_ex(Z_ARRVAL_P(trace), &pos);
 			continue;
 		}
+		
 		zend_hash_find(Z_ARRVAL_PP(entry), "file", sizeof("file"), (void **)&file);
 		zend_hash_find(Z_ARRVAL_PP(entry), "line", sizeof("line"), (void **)&line);
 		
 		if(!file || !*file || Z_TYPE_PP(file) != IS_STRING || !line || !*line || Z_TYPE_PP(line) != IS_LONG) {
 			/* Not supposed to happen */
 			smart_str_appendl(s, "?!?!? ", sizeof("?!?!? "));
+			zend_hash_move_forward_ex(Z_ARRVAL_P(trace), &pos);
 			continue;
 		}
 		php_basename(Z_STRVAL_PP(file), Z_STRLEN_PP(file), NULL, 0, &basename, &basename_len TSRMLS_CC);
@@ -211,6 +214,7 @@ static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC) {
 		FREE_ZVAL(line_copy);
 		zend_hash_move_forward_ex(Z_ARRVAL_P(trace), &pos);
 	}
+	zval_dtor(trace);
 	FREE_ZVAL(trace);
 }
 
