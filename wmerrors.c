@@ -354,6 +354,7 @@ static void wmerrors_write_request_info(php_stream *logfile_stream TSRMLS_DC) {
 	smart_str_appends(&s, "Server: ");
 	smart_str_appends(&s, hostname);
 	smart_str_appends(&s, PHP_EOL);
+	efree(hostname);
 
 	/* Method */
 	if (SG(request_info).request_method) {
