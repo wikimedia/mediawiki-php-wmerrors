@@ -165,7 +165,9 @@ static void wmerrors_cb(int type, const char *error_filename, const uint error_l
 
 	/* Pass through */
 	old_error_cb(type, new_filename.c, error_lineno, format, args);
-	smart_str_free(&new_filename);
+	
+	/* Note: old_error_cb() may not return, in which case there will be no explicit free of new_filename */
+	smart_str_free(&old_error_cb);
 }
 
 /* Obtain a concisely formatted backtrace */
@@ -179,10 +181,13 @@ static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC) {
 	ALLOC_INIT_ZVAL(trace);
 	zend_fetch_debug_backtrace(trace, 0, 0 TSRMLS_CC);
 	
-	if (!trace || Z_TYPE_P(trace) != IS_ARRAY) {
+	if (Z_TYPE_P(trace) != IS_ARRAY) {
 		/* Not supposed to happen */
+		zval_dtor(trace);
+		FREE_ZVAL(trace);
 		return;
 	}
+	
 	zend_hash_internal_pointer_reset_ex(Z_ARRVAL_P(trace), &pos);
 	while (zend_hash_get_current_data_ex(Z_ARRVAL_P(trace), (void **)&entry, &pos) == SUCCESS) {
 		if (!entry || !*entry || Z_TYPE_PP(entry) != IS_ARRAY) {
