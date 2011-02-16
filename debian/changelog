@@ -1,3 +1,11 @@
+php5-wmerrors (1.1.2-1) lucid; urgency=low
+
+  * Fixed incorrect usage of ALLOC_ZVAL()
+  * Fixed timezone warning
+  * Added logging of server hostname
+
+ -- Tim Starling <tstarling@wikimedia.org>  Wed, 16 Feb 2011 10:57:19 +1100
+
 php5-wmerrors (1.1.1-1) lucid; urgency=low
 
   * Fixed missing line break at end of backtrace

@@ -5,15 +5,11 @@
 
 #include "php.h"
 #include "php_ini.h"
-#include "ext/standard/info.h"
 #include "php_wmerrors.h"
-#include "php_streams.h" /* for __php_stream_call_depth */
+#include "ext/standard/php_standard.h"
 #include "SAPI.h" /* for sapi_module */
-#include "ext/standard/file.h" /* for file_globals aka. FG() */
 #include "ext/date/php_date.h" /* for php_format_date */
 #include "ext/standard/php_smart_str.h" /* for smart_str */
-#include "ext/standard/php_string.h" /* for php_basename() */
-#include "ext/standard/html.h" /* for php_escape_html_entities */
 #include "Zend/zend_builtin_functions.h" /* for zend_fetch_debug_backtrace */
 
 static void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
@@ -41,7 +37,7 @@ zend_module_entry wmerrors_module_entry = {
 	PHP_RSHUTDOWN(wmerrors),
 	PHP_MINFO(wmerrors),
 #if ZEND_MODULE_API_NO >= 20010901
-	"1.1.1",
+	"1.1.2",
 #endif
 	STANDARD_MODULE_PROPERTIES
 };
@@ -250,6 +246,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	char *error_time_str;
 	va_list my_args;
 	php_stream *logfile_stream;
+	int old_error_reporting;
 	
 	if ( !WMERRORS_G(enabled) ) {
 		/* Redundant with the caller */
@@ -275,8 +272,13 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	tmp1_len = vspprintf(&tmp1, 0, format, my_args);
 	va_end(my_args);
 	
-	/* Log the error */
+	/* Get a date string (without warning messages) */
+	old_error_reporting = EG(error_reporting);
+	EG(error_reporting) = 0;
 	error_time_str = php_format_date("d-M-Y H:i:s", 11, time(NULL), 1 TSRMLS_CC);
+	EG(error_reporting) = old_error_reporting;
+
+	/* Log the error */
 	php_stream_printf(logfile_stream TSRMLS_CC, "[%s] %s: %.*s at %s on line %u%s", 
 			error_time_str, wmerrors_error_type_to_string(type), tmp1_len, tmp1, error_filename, 
 			error_lineno, PHP_EOL);
@@ -343,8 +345,15 @@ static void wmerrors_write_request_info(php_stream *logfile_stream TSRMLS_DC) {
 	HashTable * server_ht;
 	zval **info;
 	smart_str s = {NULL};
+	char *hostname;
 
 	server_ht = Z_ARRVAL_P(PG(http_globals)[TRACK_VARS_SERVER]);
+
+	/* Server */
+	hostname = php_get_uname('n');
+	smart_str_appends(&s, "Server: ");
+	smart_str_appends(&s, hostname);
+	smart_str_appends(&s, PHP_EOL);
 
 	/* Method */
 	if (SG(request_info).request_method) {
