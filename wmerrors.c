@@ -207,6 +207,7 @@ static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC) {
 		smart_str_appendc(s, ' ');
 		
 		efree(basename);
+		zval_dtor(line_copy);
 		FREE_ZVAL(line_copy);
 		zend_hash_move_forward_ex(Z_ARRVAL_P(trace), &pos);
 	}
