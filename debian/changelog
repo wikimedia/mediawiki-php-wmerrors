@@ -2,7 +2,7 @@ php5-wmerrors (1.1.2-2) lucid; urgency=low
 
   * Recompiled against new version of php5
 
- -- Peter Youngmeister <pyoungmeister@wikimedia.org>  Wed, Aug 31 2011 14:36:37 -0500
+ -- Peter Youngmeister <pyoungmeister@wikimedia.org>  Wed, 31 Aug 2011 14:36:37 -0500
 
 php5-wmerrors (1.1.2-1) lucid; urgency=low
 
