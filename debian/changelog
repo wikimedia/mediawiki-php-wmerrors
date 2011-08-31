@@ -1,3 +1,9 @@
+php5-wmerrors (1.1.2-2) lucid; urgency=low
+
+  * Recompiled against new version of php5
+
+ -- Peter Youngmeister <pyoungmeister@wikimedia.org> Wed Aug 31 14:36:37 EDT 2011
+
 php5-wmerrors (1.1.2-1) lucid; urgency=low
 
   * Fixed incorrect usage of ALLOC_ZVAL()
