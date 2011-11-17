@@ -379,6 +379,7 @@ static void wmerrors_write_full_backtrace(php_stream *logfile_stream) {
 	WMERRORS_G(recursion_guard) = 2;
 	Z_STRVAL_P(trace) = erealloc( Z_STRVAL_P(trace), Z_STRLEN_P(trace)+sizeof(PHP_EOL) );
 	memcpy(Z_STRVAL_P(trace) + Z_STRLEN_P(trace), PHP_EOL, sizeof(PHP_EOL));
+	Z_STRLEN_P(trace) += sizeof(PHP_EOL) - 1; /* minus one for null */
 	php_stream_write(logfile_stream, Z_STRVAL_P(trace), Z_STRLEN_P(trace) TSRMLS_CC);
 	WMERRORS_G(recursion_guard) = 1;
 
