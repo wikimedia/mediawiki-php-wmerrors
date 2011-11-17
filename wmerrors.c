@@ -3,6 +3,8 @@
 #include "config.h"
 #endif
 
+#include <stdlib.h>
+
 #include "php.h"
 #include "php_ini.h"
 #include "php_wmerrors.h"
@@ -12,15 +14,25 @@
 #include "ext/standard/php_smart_str.h" /* for smart_str */
 #include "Zend/zend_builtin_functions.h" /* for zend_fetch_debug_backtrace */
 
+static int wmerrors_post_deactivate();
 static void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC);
 static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC);
 static void wmerrors_write_full_backtrace(php_stream *logfile_stream);
 static void wmerrors_write_request_info(php_stream *logfile_stream TSRMLS_DC);
+static void wmerrors_alarm_handler(int signo);
+static void wmerrors_install_alarm(TSRMLS_D);
+static void wmerrors_remove_alarm(TSRMLS_D);
 
 ZEND_DECLARE_MODULE_GLOBALS(wmerrors)
 
+PHP_FUNCTION(wmerrors_malloc_test);
+
+ZEND_BEGIN_ARG_INFO(wmerrors_malloc_test_arginfo, 0)
+ZEND_END_ARG_INFO()
+
 zend_function_entry wmerrors_functions[] = {
+	PHP_FE(wmerrors_malloc_test, wmerrors_malloc_test_arginfo)
 	{NULL, NULL, NULL}
 };
 
@@ -39,7 +51,9 @@ zend_module_entry wmerrors_module_entry = {
 #if ZEND_MODULE_API_NO >= 20010901
 	"1.1.2",
 #endif
-	STANDARD_MODULE_PROPERTIES
+	NO_MODULE_GLOBALS,
+	wmerrors_post_deactivate,
+	STANDARD_MODULE_PROPERTIES_EX
 };
 
 
@@ -54,6 +68,7 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_BOOLEAN("wmerrors.log_backtrace", "0", PHP_INI_ALL, OnUpdateBool, log_backtrace, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_BOOLEAN("wmerrors.ignore_logging_errors", "0", PHP_INI_ALL, OnUpdateBool, ignore_logging_errors, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_BOOLEAN("wmerrors.backtrace_in_php_error_message", "0", PHP_INI_ALL, OnUpdateBool, backtrace_in_php_error_message, zend_wmerrors_globals, wmerrors_globals)
+	STD_PHP_INI_ENTRY("wmerrors.timeout", "10", PHP_INI_ALL, OnUpdateLong, timeout, zend_wmerrors_globals, wmerrors_globals)
 PHP_INI_END()
 
 void (*old_error_cb)(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
@@ -87,6 +102,7 @@ PHP_MSHUTDOWN_FUNCTION(wmerrors)
 PHP_RINIT_FUNCTION(wmerrors)
 {
 	WMERRORS_G(recursion_guard) = 0;
+	WMERRORS_G(alarm_set) = 0;
 	return SUCCESS;
 }
 
@@ -94,6 +110,13 @@ PHP_RINIT_FUNCTION(wmerrors)
 
 PHP_RSHUTDOWN_FUNCTION(wmerrors)
 {
+	return SUCCESS;
+}
+
+int wmerrors_post_deactivate()
+{
+	TSRMLS_FETCH();
+	wmerrors_remove_alarm(TSRMLS_C);
 	return SUCCESS;
 }
 
@@ -143,6 +166,10 @@ static void wmerrors_cb(int type, const char *error_filename, const uint error_l
 	/* No more OOM errors for now thanks */
 	zend_set_memory_limit((size_t)-1);
 
+	if (WMERRORS_G(timeout)) {
+		wmerrors_install_alarm(TSRMLS_C);
+	}
+
 	/* Do not show the html error to console */
 	if ( WMERRORS_G(enabled) && strncmp(sapi_module.name, "cli", 3) ) {
 		/* Show the message */
@@ -155,18 +182,27 @@ static void wmerrors_cb(int type, const char *error_filename, const uint error_l
 	}
 	
 	/* Put a concise backtrace in the normal output */
-	if (WMERRORS_G(backtrace_in_php_error_message))
+	if (WMERRORS_G(backtrace_in_php_error_message)) {
 		wmerrors_get_concise_backtrace(&new_filename TSRMLS_CC);
+	}
 	smart_str_appendl(&new_filename, error_filename, strlen(error_filename));
 	smart_str_0(&new_filename);
 
 	WMERRORS_G(recursion_guard) = 0;
 	zend_set_memory_limit(PG(memory_limit));
 
+	if (PG(connection_status) & PHP_CONNECTION_TIMEOUT) {
+		/* abort instead of deadlocking */
+		const char abort_message[] = "wmerrors: doing precautionary abort() after request timeout\n";
+		write(STDERR_FILENO, abort_message, sizeof(abort_message) - 1);
+		abort();
+	}
+
 	/* Pass through */
 	old_error_cb(type, new_filename.c, error_lineno, format, args);
 	
-	/* Note: old_error_cb() may not return, in which case there will be no explicit free of new_filename */
+	/* Note: old_error_cb() may not return, in which case there will be no 
+	 * explicit free of new_filename */
 	smart_str_free(&old_error_cb);
 }
 
@@ -480,7 +516,13 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 	/* Write the message out */
 	if (expanded.c) {
 		php_write(expanded.c, expanded.len TSRMLS_CC);
+
+		if (PG(connection_status) & PHP_CONNECTION_TIMEOUT) {
+			/* Probably PHP will crash soon, better flush the output first */
+			sapi_flush(TSRMLS_C);
+		}
 	}
+
 	
 	/* Clean up */
 	smart_str_free(&expanded);
@@ -521,4 +563,58 @@ static const char* wmerrors_error_type_to_string(int type) {
 	}
 }
 
+/**
+ * Occasionally, PHP will time out during a malloc() call, generating SIGALRM. 
+ * A mutex will be held, and then the process will deadlock forever on the 
+ * next malloc() call. This timeout handler is designed to handle this 
+ * situation safely.
+ *
+ * We could try to avoid using malloc(), but then the process would deadlock 
+ * when it returns control to Apache.
+ */
+static void wmerrors_alarm_handler(int signo) {
+	const char message[] = "wmerrors: timed out during fatal error handler, aborting\n";
+	write(STDERR_FILENO, message, sizeof(message) - 1);
+	abort();
+}
 
+static void wmerrors_install_alarm(TSRMLS_D) {
+#ifdef WMERRORS_USE_TIMER
+	struct sigaction sa;
+	struct sigevent evp;
+	struct itimerspec its;
+
+	memset(&sa, sizeof(sa), 0);
+	sa.sa_handler = wmerrors_alarm_handler;
+	sigaction(SIGRTMIN+3, &sa, &WMERRORS_G(old_rt_action));
+
+	evp.sigev_notify = SIGEV_SIGNAL;
+	evp.sigev_signo = SIGRTMIN+3;
+	if (timer_create(CLOCK_REALTIME, &evp, &WMERRORS_G(timer)) == -1) {
+		perror("timer_create");
+		abort();
+	}
+
+	its.it_value.tv_sec = WMERRORS_G(timeout);
+	its.it_value.tv_nsec = 0;
+	its.it_interval.tv_sec = its.it_interval.tv_nsec = 0;
+	timer_settime(WMERRORS_G(timer), 0, &its, NULL);
+	WMERRORS_G(alarm_set) = 1;
+#endif
+}
+
+static void wmerrors_remove_alarm(TSRMLS_D) {
+#ifdef WMERRORS_USE_TIMER
+	if (WMERRORS_G(alarm_set)) {
+		timer_delete(WMERRORS_G(timer));
+		sigaction(SIGRTMIN+3, &WMERRORS_G(old_rt_action), NULL);
+		WMERRORS_G(alarm_set) = 0;
+	}
+#endif
+}
+
+PHP_FUNCTION(wmerrors_malloc_test) {
+	for (;;) {
+		free(malloc(100));
+	}
+}

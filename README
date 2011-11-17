@@ -62,3 +62,10 @@ wmerrors.backtrace_in_php_error_message
     If this is true, a concise backtrace, listing base filenames (not including
     the path) and line numbers only, will be included in the error message
     which is passed through to PHP, for output into error_log.
+
+wmerrors.timeout
+
+    A timeout for the fatal error handler and part of the subsequent PHP 
+    request shutdown. PHP is prone to deadlocks during fatal error handling 
+    (bug 31749), this feature is intended to mitigate their impact. If the 
+    timeout expires, a message is written to stderr and abort() is called.

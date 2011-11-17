@@ -1,3 +1,11 @@
+php5-wmerrors (1.1.3-1) oneiric; urgency=low
+
+  * Added a workaround for https://bugs.php.net/bug.php?id=31749 . Do a flush 
+    and abort after timeout instead of returning control to Apache, and set a
+    timer which will protect against deadlocks within wmerrors itself.
+
+ -- Tim Starling <tstarling@wikimedia.org>  Thu, 17 Nov 2011 12:11:43 +1100
+
 php5-wmerrors (1.1.2-2) lucid; urgency=low
 
   * Recompiled against new version of php5
