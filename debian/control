@@ -1,11 +1,11 @@
 Source: php5-wmerrors
-Section: web
+Section: php
 Priority: extra
 Maintainer: Tim Starling <tstarling@wikimedia.org>
-Build-Depends: debhelper (>= 5), autotools-dev, php5-dev
-Standards-Version: 3.7.2
+Build-Depends: debhelper (>= 8), autotools-dev, php5-dev
+Standards-Version: 3.9.3
 
 Package: php5-wmerrors
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, ${php:Depends}
 Description: An extension for enhancing and customising the handling of PHP errors.

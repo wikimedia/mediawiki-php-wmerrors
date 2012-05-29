@@ -1,3 +1,17 @@
+php5-wmerrors (1.1.4-2) precise-wikimedia; urgency=low
+
+  * Build for precise.
+  * Replace php5-common build-dep with ${php:Depends} and add a stanza to
+    debian/rules to generate that, to always depend on the built-for PHP API.
+  * Get rid of useless debian/dirs.
+  * Bump debhelper compatibility level & build-dep to >= 8.
+  * Cleanup debian/rules a bit.
+  * Bump Standards-Version to 3.9.3.
+  * Change Section to php.
+  * Use dh_strip's -k to keep debugging symbols in /usr/lib/debug.
+
+ -- Faidon Liambotis <faidon@wikimedia.org>  Tue, 29 May 2012 21:01:31 +0300
+
 php5-wmerrors (1.1.4-1) lucid-wikimedia; urgency=low
 
   * Don't strip symbols
