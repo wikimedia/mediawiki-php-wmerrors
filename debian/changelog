@@ -1,3 +1,10 @@
+php5-wmerrors (1.1.5-1) precise-wikimedia; urgency=low
+
+  * Added log_line_prefix option
+  * Fixed deadlock due to calling timer_create() from a signal handler.
+
+ -- Tim Starling <tstarling@wikimedia.org>  Thu, 09 Aug 2012 21:51:58 +1000
+
 php5-wmerrors (1.1.4-2) precise-wikimedia; urgency=low
 
   * Build for precise.

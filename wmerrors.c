@@ -18,11 +18,12 @@ static int wmerrors_post_deactivate();
 static void wmerrors_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC);
 static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC);
-static void wmerrors_write_full_backtrace(php_stream *logfile_stream);
-static void wmerrors_write_request_info(php_stream *logfile_stream TSRMLS_DC);
+static void wmerrors_write_full_backtrace(smart_str *s TSRMLS_DC);
+static void wmerrors_write_request_info(smart_str *s TSRMLS_DC);
 static void wmerrors_alarm_handler(int signo);
-static void wmerrors_install_alarm(TSRMLS_D);
-static void wmerrors_remove_alarm(TSRMLS_D);
+static void wmerrors_create_timer(TSRMLS_D);
+static void wmerrors_destroy_timer(TSRMLS_D);
+static void wmerrors_start_timer(TSRMLS_D);
 
 ZEND_DECLARE_MODULE_GLOBALS(wmerrors)
 
@@ -66,6 +67,7 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_ENTRY("wmerrors.message_file", "", PHP_INI_ALL, OnUpdateString, message_file, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_ENTRY("wmerrors.log_file", "", PHP_INI_ALL, OnUpdateString, log_file, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_BOOLEAN("wmerrors.log_backtrace", "0", PHP_INI_ALL, OnUpdateBool, log_backtrace, zend_wmerrors_globals, wmerrors_globals)
+	STD_PHP_INI_ENTRY("wmerrors.log_line_prefix", "", PHP_INI_ALL, OnUpdateString, log_line_prefix, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_BOOLEAN("wmerrors.ignore_logging_errors", "0", PHP_INI_ALL, OnUpdateBool, ignore_logging_errors, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_BOOLEAN("wmerrors.backtrace_in_php_error_message", "0", PHP_INI_ALL, OnUpdateBool, backtrace_in_php_error_message, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_ENTRY("wmerrors.timeout", "10", PHP_INI_ALL, OnUpdateLong, timeout, zend_wmerrors_globals, wmerrors_globals)
@@ -78,6 +80,10 @@ static void php_wmerrors_init_globals(zend_wmerrors_globals *wmerrors_globals)
 	wmerrors_globals->message_file = NULL;
 	wmerrors_globals->log_file = NULL;
 	wmerrors_globals->log_backtrace = 0;
+	wmerrors_globals->log_line_prefix = NULL;
+#ifdef WMERRORS_USE_TIMER
+	wmerrors_globals->timer_created = 0;
+#endif
 }
 
 PHP_MINIT_FUNCTION(wmerrors)
@@ -102,7 +108,7 @@ PHP_MSHUTDOWN_FUNCTION(wmerrors)
 PHP_RINIT_FUNCTION(wmerrors)
 {
 	WMERRORS_G(recursion_guard) = 0;
-	WMERRORS_G(alarm_set) = 0;
+	wmerrors_create_timer(TSRMLS_C);
 	return SUCCESS;
 }
 
@@ -116,7 +122,7 @@ PHP_RSHUTDOWN_FUNCTION(wmerrors)
 int wmerrors_post_deactivate()
 {
 	TSRMLS_FETCH();
-	wmerrors_remove_alarm(TSRMLS_C);
+	wmerrors_destroy_timer(TSRMLS_C);
 	return SUCCESS;
 }
 
@@ -167,7 +173,7 @@ static void wmerrors_cb(int type, const char *error_filename, const uint error_l
 	zend_set_memory_limit((size_t)-1);
 
 	if (WMERRORS_G(timeout)) {
-		wmerrors_install_alarm(TSRMLS_C);
+		wmerrors_start_timer(TSRMLS_C);
 	}
 
 	/* Do not show the html error to console */
@@ -191,19 +197,21 @@ static void wmerrors_cb(int type, const char *error_filename, const uint error_l
 	WMERRORS_G(recursion_guard) = 0;
 	zend_set_memory_limit(PG(memory_limit));
 
+#ifndef ZTS
 	if (PG(connection_status) & PHP_CONNECTION_TIMEOUT) {
 		/* abort instead of deadlocking */
 		const char abort_message[] = "wmerrors: doing precautionary abort() after request timeout\n";
 		write(STDERR_FILENO, abort_message, sizeof(abort_message) - 1);
 		abort();
 	}
+#endif
 
 	/* Pass through */
 	old_error_cb(type, new_filename.c, error_lineno, format, args);
 	
 	/* Note: old_error_cb() may not return, in which case there will be no 
 	 * explicit free of new_filename */
-	smart_str_free(&old_error_cb);
+	smart_str_free(&new_filename);
 }
 
 /* Obtain a concisely formatted backtrace */
@@ -259,7 +267,7 @@ static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC) {
 	FREE_ZVAL(trace);
 }
 
-static php_stream * wmerrors_open_log_file(const char* stream_name) {
+static php_stream * wmerrors_open_log_file(const char* stream_name TSRMLS_DC) {
 	php_stream * stream;
 	int err; char *errstr = NULL;
 	struct timeval tv;
@@ -287,12 +295,14 @@ static php_stream * wmerrors_open_log_file(const char* stream_name) {
 }
 
 static void wmerrors_log_error(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC) {
-	char *tmp1;
-	int tmp1_len;
+	char *input_message, *first_line;
+	int input_message_len, first_line_len;
 	char *error_time_str;
 	va_list my_args;
 	php_stream *logfile_stream;
 	int old_error_reporting;
+	smart_str message = {NULL};
+	smart_str prefixed_message = {NULL};
 	
 	if ( !WMERRORS_G(enabled) ) {
 		/* Redundant with the caller */
@@ -307,7 +317,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	/* Try opening the logging file */
 	/* Set recursion_guard==2 whenever we're doing something to the log file */
 	WMERRORS_G(recursion_guard) = 2;
-	logfile_stream = wmerrors_open_log_file( WMERRORS_G(log_file) );
+	logfile_stream = wmerrors_open_log_file(WMERRORS_G(log_file) TSRMLS_CC);
 	WMERRORS_G(recursion_guard) = 1;
 	if ( !logfile_stream ) {
 		return;
@@ -315,7 +325,8 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	
 	/* Don't destroy the caller's va_list */
 	va_copy(my_args, args);
-	tmp1_len = vspprintf(&tmp1, 0, format, my_args);
+	/* Write the input message */
+	input_message_len = vspprintf(&input_message, 0, format, my_args);
 	va_end(my_args);
 	
 	/* Get a date string (without warning messages) */
@@ -324,30 +335,59 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	error_time_str = php_format_date("d-M-Y H:i:s", 11, time(NULL), 1 TSRMLS_CC);
 	EG(error_reporting) = old_error_reporting;
 
-	/* Log the error */
-	php_stream_printf(logfile_stream TSRMLS_CC, "[%s] %s: %.*s at %s on line %u%s", 
-			error_time_str, wmerrors_error_type_to_string(type), tmp1_len, tmp1, error_filename, 
+	/* Make the initial log line */
+	first_line_len = spprintf(&first_line, 0, "[%s] %s: %.*s at %s on line %u%s", 
+			error_time_str, wmerrors_error_type_to_string(type), 
+			input_message_len, input_message, error_filename, 
 			error_lineno, PHP_EOL);
+	smart_str_appendl(&message, first_line, first_line_len);
 	efree(error_time_str);
-	efree(tmp1);
+	efree(input_message);
+	efree(first_line);
 	
 	/* Write the request info */
-	wmerrors_write_request_info(logfile_stream TSRMLS_CC);
+	wmerrors_write_request_info(&message TSRMLS_CC);
 
 	/* Write a backtrace */
 	if ( WMERRORS_G(log_backtrace) ) {
-		php_stream_printf(logfile_stream TSRMLS_CC, "Backtrace:%s", PHP_EOL);
-		wmerrors_write_full_backtrace(logfile_stream TSRMLS_CC);
+		smart_str_appends(&message, "Backtrace:");
+		smart_str_appends(&message, PHP_EOL);
+		wmerrors_write_full_backtrace(&message TSRMLS_CC);
 	}
-	
-	php_stream_close( logfile_stream );
+
+	/* Add the log line prefix if requested */
+	if (message.c && WMERRORS_G(log_line_prefix) && WMERRORS_G(log_line_prefix)[0]) {
+		char * line_start = message.c;
+		char * message_end = message.c + message.len;
+		char * line_end;
+		while (line_start < message_end) {
+			smart_str_appends(&prefixed_message, WMERRORS_G(log_line_prefix));
+			line_end = memchr(line_start, '\n', message_end - line_start);
+			if (!line_end) {
+				line_end = message_end - 1;
+			}
+			smart_str_appendl(&prefixed_message, line_start, line_end - line_start + 1);
+			line_start = line_end + 1;
+		}
+		smart_str_free(&message);
+	} else {
+		prefixed_message = message;
+	}
+
+	WMERRORS_G(recursion_guard) = 2;
+	if (prefixed_message.c) {
+		php_stream_write(logfile_stream, prefixed_message.c, prefixed_message.len);
+	}
+	php_stream_close(logfile_stream);
+	WMERRORS_G(recursion_guard) = 1;
+	smart_str_free(&prefixed_message);
 }
 
 
 /**
  * Write a backtrace to a stream
  */
-static void wmerrors_write_full_backtrace(php_stream *logfile_stream) {
+static void wmerrors_write_full_backtrace(smart_str * s TSRMLS_DC) {
 	zval *trace = NULL;
 	zval backtrace_fname;
 	int status;
@@ -376,12 +416,10 @@ static void wmerrors_write_full_backtrace(php_stream *logfile_stream) {
 
 	/* Write it */
 	convert_to_string(trace);
-	WMERRORS_G(recursion_guard) = 2;
 	Z_STRVAL_P(trace) = erealloc( Z_STRVAL_P(trace), Z_STRLEN_P(trace)+sizeof(PHP_EOL) );
 	memcpy(Z_STRVAL_P(trace) + Z_STRLEN_P(trace), PHP_EOL, sizeof(PHP_EOL));
 	Z_STRLEN_P(trace) += sizeof(PHP_EOL) - 1; /* minus one for null */
-	php_stream_write(logfile_stream, Z_STRVAL_P(trace), Z_STRLEN_P(trace) TSRMLS_CC);
-	WMERRORS_G(recursion_guard) = 1;
+	smart_str_appendl(s, Z_STRVAL_P(trace), Z_STRLEN_P(trace));
 
 	zval_ptr_dtor(&trace);
 }
@@ -389,59 +427,54 @@ static void wmerrors_write_full_backtrace(php_stream *logfile_stream) {
 /**
  * Write the current URL to a stream
  */
-static void wmerrors_write_request_info(php_stream *logfile_stream TSRMLS_DC) {
+static void wmerrors_write_request_info(smart_str * s TSRMLS_DC) {
 	HashTable * server_ht;
 	zval **info;
-	smart_str s = {NULL};
 	char *hostname;
 
 	server_ht = Z_ARRVAL_P(PG(http_globals)[TRACK_VARS_SERVER]);
 
 	/* Server */
 	hostname = php_get_uname('n');
-	smart_str_appends(&s, "Server: ");
-	smart_str_appends(&s, hostname);
-	smart_str_appends(&s, PHP_EOL);
+	smart_str_appends(s, "Server: ");
+	smart_str_appends(s, hostname);
+	smart_str_appends(s, PHP_EOL);
 	efree(hostname);
 
 	/* Method */
 	if (SG(request_info).request_method) {
-		smart_str_appends(&s, "Method: ");
-		smart_str_appends(&s, SG(request_info).request_method);
-		smart_str_appends(&s, PHP_EOL);
+		smart_str_appends(s, "Method: ");
+		smart_str_appends(s, SG(request_info).request_method);
+		smart_str_appends(s, PHP_EOL);
 	}
 
 	/* URL */
-	smart_str_appends(&s, "URL: ");
+	smart_str_appends(s, "URL: ");
 	if (zend_hash_find(server_ht, "HTTPS", sizeof("HTTPS"), (void**)(&info)) == SUCCESS) {
-		smart_str_appends(&s, "https://");
+		smart_str_appends(s, "https://");
 	} else {
-		smart_str_appends(&s, "http://");
+		smart_str_appends(s, "http://");
 	}
 	if (zend_hash_find(server_ht, "HTTP_HOST", sizeof("HTTP_HOST"), (void**)(&info)) == SUCCESS) {
-		smart_str_appendl(&s, Z_STRVAL_PP(info), Z_STRLEN_PP(info));
+		smart_str_appendl(s, Z_STRVAL_PP(info), Z_STRLEN_PP(info));
 	} else {
-		smart_str_appends(&s, "[unknown-host]");
+		smart_str_appends(s, "[unknown-host]");
 	}
 	if (SG(request_info).request_uri) {
-		smart_str_appends(&s, SG(request_info).request_uri);
+		smart_str_appends(s, SG(request_info).request_uri);
 	}
 	if (SG(request_info).query_string) {
-		smart_str_appendc(&s, '?');
-		smart_str_appends(&s, SG(request_info).query_string);
+		smart_str_appendc(s, '?');
+		smart_str_appends(s, SG(request_info).query_string);
 	}
-	smart_str_appends(&s, PHP_EOL);
+	smart_str_appends(s, PHP_EOL);
 
 	/* Cookie */
 	if (SG(request_info).cookie_data) {
-		smart_str_appends(&s, "Cookie: ");
-		smart_str_appends(&s, SG(request_info).cookie_data);
-		smart_str_appends(&s, PHP_EOL);
+		smart_str_appends(s, "Cookie: ");
+		smart_str_appends(s, SG(request_info).cookie_data);
+		smart_str_appends(s, PHP_EOL);
 	}
-	if (s.c) {
-		php_stream_write(logfile_stream, s.c, s.len TSRMLS_CC);
-	}
-	smart_str_free(&s);
 }
 
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC)
@@ -579,13 +612,15 @@ static void wmerrors_alarm_handler(int signo) {
 	abort();
 }
 
-static void wmerrors_install_alarm(TSRMLS_D) {
+/**
+ * The timer has to be created in advance, since timer_create() calls malloc().
+ */
+static void wmerrors_create_timer(TSRMLS_D) {
 #ifdef WMERRORS_USE_TIMER
 	struct sigaction sa;
 	struct sigevent evp;
-	struct itimerspec its;
 
-	memset(&sa, sizeof(sa), 0);
+	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = wmerrors_alarm_handler;
 	sigaction(SIGRTMIN+3, &sa, &WMERRORS_G(old_rt_action));
 
@@ -595,21 +630,29 @@ static void wmerrors_install_alarm(TSRMLS_D) {
 		perror("timer_create");
 		abort();
 	}
+	WMERRORS_G(timer_created) = 1;
+#endif
+}
 
+static void wmerrors_start_timer(TSRMLS_D) {
+#ifdef WMERRORS_USE_TIMER
+	if (!WMERRORS_G(timer_created)) {
+		return;
+	}
+	struct itimerspec its;
 	its.it_value.tv_sec = WMERRORS_G(timeout);
 	its.it_value.tv_nsec = 0;
 	its.it_interval.tv_sec = its.it_interval.tv_nsec = 0;
 	timer_settime(WMERRORS_G(timer), 0, &its, NULL);
-	WMERRORS_G(alarm_set) = 1;
 #endif
 }
 
-static void wmerrors_remove_alarm(TSRMLS_D) {
+static void wmerrors_destroy_timer(TSRMLS_D) {
 #ifdef WMERRORS_USE_TIMER
-	if (WMERRORS_G(alarm_set)) {
+	if (WMERRORS_G(timer)) {
 		timer_delete(WMERRORS_G(timer));
+		WMERRORS_G(timer_created) = 0;
 		sigaction(SIGRTMIN+3, &WMERRORS_G(old_rt_action), NULL);
-		WMERRORS_G(alarm_set) = 0;
 	}
 #endif
 }

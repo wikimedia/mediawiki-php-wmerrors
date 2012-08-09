@@ -32,15 +32,16 @@ PHP_MINFO_FUNCTION(wmerrors);
 ZEND_BEGIN_MODULE_GLOBALS(wmerrors)
 	char * message_file;
 	char * log_file;
+	char * log_line_prefix;
 	int recursion_guard;
 	int enabled;
 	int log_backtrace;
 	int ignore_logging_errors;
 	int backtrace_in_php_error_message;
 	long timeout;
-	int alarm_set;
 	void (*old_on_timeout)(int seconds TSRMLS_DC);
 #ifdef WMERRORS_USE_TIMER
+	int timer_created;
 	struct sigaction old_rt_action;
 	timer_t timer;
 #endif
