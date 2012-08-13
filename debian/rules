@@ -30,7 +30,6 @@ clean:
 	dh_testdir
 	dh_testroot
 	rm -f build-stamp 
-	$(MAKE) distclean
 	rm -f config.sub config.guess
 	dh_clean 
 
