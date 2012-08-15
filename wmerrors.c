@@ -290,7 +290,11 @@ static php_stream * wmerrors_open_log_file(const char* stream_name TSRMLS_DC) {
 		stream = php_stream_xport_create(stream_name, strlen(stream_name), flags,
 			STREAM_XPORT_CLIENT | STREAM_XPORT_CONNECT, NULL, &tv, NULL, &errstr, &err);
 	}
-		
+
+	/* Set the chunk size to something fairly large, to avoid fragmentation */
+	if (stream) {
+		php_stream_set_option(stream, PHP_STREAM_OPTION_SET_CHUNK_SIZE, 65507, NULL);
+	}
 	return stream;
 }
 
@@ -649,7 +653,7 @@ static void wmerrors_start_timer(TSRMLS_D) {
 
 static void wmerrors_destroy_timer(TSRMLS_D) {
 #ifdef WMERRORS_USE_TIMER
-	if (WMERRORS_G(timer)) {
+	if (WMERRORS_G(timer_created)) {
 		timer_delete(WMERRORS_G(timer));
 		WMERRORS_G(timer_created) = 0;
 		sigaction(SIGRTMIN+3, &WMERRORS_G(old_rt_action), NULL);

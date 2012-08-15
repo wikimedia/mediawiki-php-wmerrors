@@ -1,3 +1,12 @@
+php5-wmerrors (1.1.6-1) precise-wikimedia; urgency=low
+
+  * Fixed failure to destroy the timer, leading to a signal after request
+    shutdown, potentially delivered to another request
+  * Increase the write size to avoid splitting the log message over multiple
+    UDP send() calls, since that breaks multiplexing if it happens.
+
+ -- Tim Starling <tstarling@wikimedia.org>  Wed, 15 Aug 2012 15:57:24 +1000
+
 php5-wmerrors (1.1.5-1) precise-wikimedia; urgency=low
 
   * Added log_line_prefix option
