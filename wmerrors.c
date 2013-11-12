@@ -223,7 +223,12 @@ static void wmerrors_get_concise_backtrace(smart_str *s TSRMLS_DC) {
 	int use_copy;
 	
 	ALLOC_INIT_ZVAL(trace);
+	/* Argument added April 2011 6f3148db */
+#if PHP_VERSION_ID < 50399
 	zend_fetch_debug_backtrace(trace, 0, 0 TSRMLS_CC);
+#else
+	zend_fetch_debug_backtrace(trace, 0, 0, 1000 TSRMLS_CC);
+#endif
 	
 	if (Z_TYPE_P(trace) != IS_ARRAY) {
 		/* Not supposed to happen */
@@ -301,10 +306,11 @@ static php_stream * wmerrors_open_log_file(const char* stream_name TSRMLS_DC) {
 static void wmerrors_log_error(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC) {
 	char *input_message, *first_line;
 	int input_message_len, first_line_len;
-	char *error_time_str;
+	char error_time_str[256];
+	time_t simpleTime;
+	struct tm brokenTime;
 	va_list my_args;
 	php_stream *logfile_stream;
-	int old_error_reporting;
 	smart_str message = {NULL};
 	smart_str prefixed_message = {NULL};
 	
@@ -333,11 +339,10 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 	input_message_len = vspprintf(&input_message, 0, format, my_args);
 	va_end(my_args);
 	
-	/* Get a date string (without warning messages) */
-	old_error_reporting = EG(error_reporting);
-	EG(error_reporting) = 0;
-	error_time_str = php_format_date("d-M-Y H:i:s", 11, time(NULL), 1 TSRMLS_CC);
-	EG(error_reporting) = old_error_reporting;
+	/* Get a date string */
+	simpleTime = time(NULL);
+	localtime_r(&simpleTime, &brokenTime);
+	strftime(error_time_str, sizeof(error_time_str), "%Y-%m-%d %H:%M:%S", &brokenTime);
 
 	/* Make the initial log line */
 	first_line_len = spprintf(&first_line, 0, "[%s] %s: %.*s at %s on line %u%s", 
@@ -345,7 +350,6 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint 
 			input_message_len, input_message, error_filename, 
 			error_lineno, PHP_EOL);
 	smart_str_appendl(&message, first_line, first_line_len);
-	efree(error_time_str);
 	efree(input_message);
 	efree(first_line);
 	
@@ -481,6 +485,34 @@ static void wmerrors_write_request_info(smart_str * s TSRMLS_DC) {
 	}
 }
 
+/**
+ * Consistent wrapper for php_escape_html_entities
+ * oldlen/newlen were converted from int to size_t
+ * October 2010 91727cb844ecfe55f6dcd2f13ffeec3962aabbac 
+ */
+static char *wmerrors_escape_html_entities(const char *old, size_t oldlen, size_t *newlen TSRMLS_DC)
+{
+	char * ret;
+#if PHP_VERSION_ID < 50399
+	const char message[] = "wmerrors: error document larger than 2GB\n";
+	int newlen_int;
+	if (oldlen > INT_MAX) {
+		write(STDERR_FILENO, message, sizeof(message) - 1);
+		abort();
+	}
+
+	ret = php_escape_html_entities((unsigned char*)old, (int)oldlen, &newlen_int, 0, ENT_COMPAT, NULL TSRMLS_CC);
+	if (newlen_int < 0) {
+		write(STDERR_FILENO, message, sizeof(message) - 1);
+		abort();
+	}
+	*newlen = (size_t)newlen_int;
+#else
+	ret = php_escape_html_entities((unsigned char*)old, oldlen, newlen, 0, ENT_COMPAT, NULL TSRMLS_CC);
+#endif
+	return ret;
+}
+
 static void wmerrors_show_message(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args TSRMLS_DC)
 {
 	php_stream *stream;
@@ -488,7 +520,7 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 	int message_len;
 	long maxlen = PHP_STREAM_COPY_ALL;
 	char * tmp1, *tmp2;
-	int tmp1_len, tmp2_len;
+	size_t tmp1_len, tmp2_len;
 	smart_str expanded = { NULL };
 	va_list my_args;
 
@@ -515,8 +547,8 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 	for (p = message; p < message + message_len; p++) { 
 		if (*p == '$') {
 			if (!strncmp(p, "$file", sizeof("$file")-1)) {
-				tmp1 = php_escape_html_entities((unsigned char*)error_filename, 
-						strlen(error_filename), &tmp1_len, 0, ENT_COMPAT, NULL TSRMLS_CC);
+				tmp1 = wmerrors_escape_html_entities(error_filename,
+						strlen(error_filename), &tmp1_len TSRMLS_CC);
 				smart_str_appendl(&expanded, tmp1, tmp1_len);
 				efree(tmp1);
 				p += sizeof("file") - 1;
@@ -528,8 +560,7 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 			} else if (!strncmp(p, "$message", sizeof("$message")-1)) {
 				/* Don't destroy args */
 				tmp1_len = vspprintf(&tmp1, 0, format, my_args);
-				tmp2 = php_escape_html_entities((unsigned char*)tmp1, tmp1_len, &tmp2_len, 
-						0, ENT_COMPAT, NULL TSRMLS_CC);
+				tmp2 = wmerrors_escape_html_entities(tmp1, tmp1_len, &tmp2_len TSRMLS_CC);
 				smart_str_appendl(&expanded, tmp2, tmp2_len);
 				efree(tmp1);
 				efree(tmp2);

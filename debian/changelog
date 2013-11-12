@@ -1,3 +1,13 @@
+php5-wmerrors (1.2.0-1) precise-wikimedia; urgency=low
+
+  * Added support for PHP 5.4
+  * Use localtime() instead of php_format_date() so that the timezone will be
+    consistent in logs regardless of whether date_default_timezone_set() etc.
+    was called.
+  * Use ISO 8601 date format
+
+ -- Tim Starling <tstarling@wikimedia.org>  Tue, 12 Nov 2013 11:50:49 +1100
+
 php5-wmerrors (1.1.6-1) precise-wikimedia; urgency=low
 
   * Fixed failure to destroy the timer, leading to a signal after request
