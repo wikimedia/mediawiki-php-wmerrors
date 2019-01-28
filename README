@@ -1,4 +1,4 @@
-This is an extension for enhancing and customising the handling of PHP errors. 
+This is an extension for enhancing and customising the handling of PHP errors.
 
 Compile and install it in the usual way, there are no special dependencies:
 
@@ -11,19 +11,19 @@ The options are:
 
 wmerrors.enabled
 
-    Set this to true to enable custom error handling. This allows the extension 
-    to be disabled with ini_set() at any time before the fatal error is 
+    Set this to true to enable custom error handling. This allows the extension
+    to be disabled with ini_set() at any time before the fatal error is
     generated.
 
 wmerrors.message_file
 
-	Set this to the path to an HTML file which you wish to be displayed to your 
+	Set this to the path to an HTML file which you wish to be displayed to your
     users. A sample HTML file is distributed with this extension in error.html.
 
-    If this is set, display_errors should be disabled to prevent a duplicate 
+    If this is set, display_errors should be disabled to prevent a duplicate
     message from being shown.
 
-    The error HTML may contain the following special variables, which will be 
+    The error HTML may contain the following special variables, which will be
     replaced with the appropriate values when the error message is generated.
     Unlike PHP's display_errors, these values will be properly escaped to avoid
     XSS:
@@ -34,7 +34,7 @@ wmerrors.message_file
 
 wmerrors.log_file
 
-    The name of a file to send error reports to. This is similar to PHP's 
+    The name of a file to send error reports to. This is similar to PHP's
     error_log, except that it provides several additional features. Logging to
     a TCP or UDP network socket is also supported, using a URL of the form:
 
@@ -47,13 +47,13 @@ wmerrors.log_file
 
 wmerrors.log_backtrace
 
-    Set this to true if you want the error report sent to wmerrors.log_file to 
+    Set this to true if you want the error report sent to wmerrors.log_file to
     include a backtrace.
 
 wmerrors.ignore_logging_errors
 
     If an error is encountered while opening or writing to the file specified
-    in wmerrors.log_file, then the error will be ignored if this is set to 
+    in wmerrors.log_file, then the error will be ignored if this is set to
     true. If it is set to false, the error will be handled with PHP's standard
     error handling, and so will be available via display_errors or error_log.
 
@@ -62,10 +62,3 @@ wmerrors.backtrace_in_php_error_message
     If this is true, a concise backtrace, listing base filenames (not including
     the path) and line numbers only, will be included in the error message
     which is passed through to PHP, for output into error_log.
-
-wmerrors.timeout
-
-    A timeout for the fatal error handler and part of the subsequent PHP 
-    request shutdown. PHP is prone to deadlocks during fatal error handling 
-    (bug 31749), this feature is intended to mitigate their impact. If the 
-    timeout expires, a message is written to stderr and abort() is called.

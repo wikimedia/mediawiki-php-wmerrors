@@ -15,13 +15,7 @@ extern zend_module_entry wmerrors_module_entry;
 #include "TSRM.h"
 #endif
 
-#include "ext/standard/php_smart_str_public.h"
-
-#if _POSIX_C_SOURCE >= 200112 && !defined(ZTS)
-#define WMERRORS_USE_TIMER
-#include <signal.h>
-#include <time.h>
-#endif
+#include "ext/standard/php_smart_string_public.h"
 
 PHP_MINIT_FUNCTION(wmerrors);
 PHP_MSHUTDOWN_FUNCTION(wmerrors);
@@ -34,18 +28,10 @@ ZEND_BEGIN_MODULE_GLOBALS(wmerrors)
 	char * log_file;
 	char * log_line_prefix;
 	int recursion_guard;
-	int enabled;
-	int log_backtrace;
-	int ignore_logging_errors;
-	int backtrace_in_php_error_message;
-	long timeout;
-	void (*old_on_timeout)(int seconds TSRMLS_DC);
-#ifdef WMERRORS_USE_TIMER
-	int timer_created;
-	struct sigaction old_rt_action;
-	timer_t timer;
-#endif
-	
+	zend_bool enabled;
+	zend_bool log_backtrace;
+	zend_bool ignore_logging_errors;
+	zend_bool backtrace_in_php_error_message;
 ZEND_END_MODULE_GLOBALS(wmerrors)
 
 
