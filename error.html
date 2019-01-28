@@ -159,7 +159,7 @@
      document.getElementById('TopLinks').style.display = 'none'
 
      // Look at the current URL, and if it matches an available language, show that. E.g. fr.wiktionary.org -> show 'fr'
-     var CurrentLocation = new String(window.location.href) 
+     var CurrentLocation = new String(window.location.href)
      var CurrentSubdomain = CurrentLocation.slice(CurrentLocation.lastIndexOf('//') + 2, CurrentLocation.indexOf('.'))
      for (var LanguageAbbr in LanguageDetails) {
        if (LanguageAbbr == CurrentSubdomain) {
@@ -173,17 +173,6 @@
        var RootLanguage = CurrentSubdomain.slice(0, CurrentSubdomain.indexOf('-'))
        for (var LanguageAbbr in LanguageDetails) {
          if (LanguageAbbr == RootLanguage) {
-           ShowLanguage(LanguageAbbr);
-           return;
-          }
-        }
-      }
-
-     // If it's secure.wikimedia.org, look later in the URL for the language code
-     if (CurrentSubdomain == 'secure') {
-       var SecureSubdomain = CurrentLocation.split('/')
-       for (var LanguageAbbr in LanguageDetails) {
-         if (LanguageAbbr == SecureSubdomain[4]) {
            ShowLanguage(LanguageAbbr);
            return;
           }
@@ -810,7 +799,7 @@
    <!-- Technical details of the error; shows all the time, with any language -->
    <div class="TechnicalStuff">
     <bdo dir="ltr">
-        PHP fatal error in $file line $line: <br/> 
+        PHP fatal error in $file line $line: <br/>
         $message
     </bdo>
     <div id="AdditionalTechnicalStuff"></div>
