@@ -1,0 +1,34 @@
+# Editors
+*~
+.*.swp
+
+# Auto-generated files from building
+.deps
+.libs/
+Makefile*
+build/
+modules/
+tests/*.diff
+tests/*.out
+tests/*.php
+tests/*.exp
+tests/*.log
+tests/*.sh
+install-sh
+libtool
+ltmain.sh
+missing
+run-tests.php
+mkinstalldirs
+configure*
+acinclude.m4
+aclocal.m4
+autom4te.cache/
+config.guess
+config.h*
+config.log
+config.nice
+config.status
+config.sub
+*.lo
+*.la
