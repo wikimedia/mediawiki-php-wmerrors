@@ -7,6 +7,7 @@
 
 #include "php.h"
 #include "php_ini.h"
+#include "php_main.h"
 #include "php_wmerrors.h"
 #include "ext/standard/php_standard.h"
 #include "SAPI.h" /* for sapi_module */
@@ -21,6 +22,7 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 static void wmerrors_get_concise_backtrace(smart_string *s);
 static void wmerrors_write_full_backtrace(smart_string *s);
 static void wmerrors_write_request_info(smart_string *s);
+static void wmerrors_execute_file(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args);
 
 ZEND_DECLARE_MODULE_GLOBALS(wmerrors)
 
@@ -58,6 +60,7 @@ ZEND_GET_MODULE(wmerrors)
 PHP_INI_BEGIN()
 	STD_PHP_INI_BOOLEAN("wmerrors.enabled", "0", PHP_INI_ALL, OnUpdateBool, enabled, zend_wmerrors_globals, wmerrors_globals )
 	STD_PHP_INI_ENTRY("wmerrors.message_file", "", PHP_INI_ALL, OnUpdateString, message_file, zend_wmerrors_globals, wmerrors_globals)
+	STD_PHP_INI_ENTRY("wmerrors.error_script_file", "", PHP_INI_ALL, OnUpdateString, error_script_file, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_ENTRY("wmerrors.log_file", "", PHP_INI_ALL, OnUpdateString, log_file, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_BOOLEAN("wmerrors.log_backtrace", "0", PHP_INI_ALL, OnUpdateBool, log_backtrace, zend_wmerrors_globals, wmerrors_globals)
 	STD_PHP_INI_ENTRY("wmerrors.log_line_prefix", "", PHP_INI_ALL, OnUpdateString, log_line_prefix, zend_wmerrors_globals, wmerrors_globals)
@@ -106,7 +109,6 @@ PHP_RSHUTDOWN_FUNCTION(wmerrors)
 
 int wmerrors_post_deactivate()
 {
-	TSRMLS_FETCH();
 	return SUCCESS;
 }
 
@@ -124,7 +126,6 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint3
 static void wmerrors_cb(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args)
 {
 	smart_string new_filename = { NULL };
-	TSRMLS_FETCH();
 
 	/* Do not call the custom error handling if:
 	 * it's not enabled,
@@ -152,17 +153,21 @@ static void wmerrors_cb(int type, const char *error_filename, const uint32_t err
 	/* Do not show the html error to console */
 	if ( WMERRORS_G(enabled) && strncmp(sapi_module.name, "cli", 3) ) {
 		/* Show the message */
-		wmerrors_show_message(type, error_filename, error_lineno, format, args TSRMLS_CC);
+		if (WMERRORS_G(error_script_file) && WMERRORS_G(error_script_file)[0] != '\0') {
+			wmerrors_execute_file(type, error_filename, error_lineno, format, args);
+		} else if (WMERRORS_G(message_file) && WMERRORS_G(message_file)[0] != '\0') {
+			wmerrors_show_message(type, error_filename, error_lineno, format, args);
+		}
 	}
 
 	if ( WMERRORS_G(enabled) ) {
 		/* Log the error */
-		wmerrors_log_error(type, error_filename, error_lineno, format, args TSRMLS_CC);
+		wmerrors_log_error(type, error_filename, error_lineno, format, args);
 	}
 
 	/* Put a concise backtrace in the normal output */
 	if (WMERRORS_G(backtrace_in_php_error_message)) {
-		wmerrors_get_concise_backtrace(&new_filename TSRMLS_CC);
+		wmerrors_get_concise_backtrace(&new_filename);
 	}
 	smart_string_appendl(&new_filename, error_filename, strlen(error_filename));
 	smart_string_0(&new_filename);
@@ -184,7 +189,7 @@ static void wmerrors_get_concise_backtrace(smart_string *s) {
 	HashPosition pos;
 	zend_string *basename;
 
-	zend_fetch_debug_backtrace(&trace, 0, 0, 1000 TSRMLS_CC);
+	zend_fetch_debug_backtrace(&trace, 0, 0, 1000);
 
 	if (Z_TYPE(trace) != IS_ARRAY) {
 		/* Not supposed to happen */
@@ -265,11 +270,6 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint3
 	smart_string message = {NULL};
 	smart_string prefixed_message = {NULL};
 
-	if ( !WMERRORS_G(enabled) ) {
-		/* Redundant with the caller */
-		return;
-	}
-
 	if ( !WMERRORS_G(log_file) || *WMERRORS_G(log_file) == '\0') {
 		/* No log file configured */
 		return;
@@ -278,7 +278,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint3
 	/* Try opening the logging file */
 	/* Set recursion_guard==2 whenever we're doing something to the log file */
 	WMERRORS_G(recursion_guard) = 2;
-	logfile_stream = wmerrors_open_log_file(WMERRORS_G(log_file) TSRMLS_CC);
+	logfile_stream = wmerrors_open_log_file(WMERRORS_G(log_file));
 	WMERRORS_G(recursion_guard) = 1;
 	if ( !logfile_stream ) {
 		return;
@@ -305,13 +305,13 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint3
 	efree(first_line);
 
 	/* Write the request info */
-	wmerrors_write_request_info(&message TSRMLS_CC);
+	wmerrors_write_request_info(&message);
 
 	/* Write a backtrace */
 	if ( WMERRORS_G(log_backtrace) ) {
 		smart_string_appends(&message, "Backtrace:");
 		smart_string_appends(&message, PHP_EOL);
-		wmerrors_write_full_backtrace(&message TSRMLS_CC);
+		wmerrors_write_full_backtrace(&message);
 	}
 
 	/* Add the log line prefix if requested */
@@ -344,7 +344,7 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint3
 
 
 /**
- * Write a backtrace to a stream
+ * Write a backtrace to a string
  */
 static void wmerrors_write_full_backtrace(smart_string * s) {
 	zval trace;
@@ -358,7 +358,7 @@ static void wmerrors_write_full_backtrace(smart_string * s) {
 	/* Call Exception::getTraceAsString() */
 	ZVAL_STRING(&backtrace_fname, "getTraceAsString");
 	status = call_user_function_ex(NULL, &exception, &backtrace_fname,
-		&trace, 0, NULL, 0, NULL TSRMLS_CC);
+		&trace, 0, NULL, 0, NULL);
 
 	zval_dtor(&backtrace_fname);
 	zval_ptr_dtor(&exception);
@@ -375,7 +375,7 @@ static void wmerrors_write_full_backtrace(smart_string * s) {
 }
 
 /**
- * Write the current URL to a stream
+ * Write the current URL to a string
  */
 static void wmerrors_write_request_info(smart_string * s) {
 	HashTable * server_ht;
@@ -448,12 +448,7 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 	smart_string expanded = { NULL };
 	va_list my_args;
 
-	/* Is there a sane message_file? */
-	if (!WMERRORS_G(message_file) || *WMERRORS_G(message_file) == '\0') {
-		return;
-	}
-
-	/* Open it */
+	/* Open the message file */
 	stream = php_stream_open_wrapper(WMERRORS_G(message_file), "rb",
 			REPORT_ERRORS, NULL);
 	if (!stream) {
@@ -502,12 +497,12 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 
 		ctr.line = "HTTP/1.0 500 Internal Server Error";
 		ctr.line_len = strlen(ctr.line);
-		sapi_header_op(SAPI_HEADER_REPLACE, &ctr TSRMLS_CC);
+		sapi_header_op(SAPI_HEADER_REPLACE, &ctr);
 	}
 
 	/* Write the message out */
 	if (expanded.c) {
-		php_write(expanded.c, expanded.len TSRMLS_CC);
+		php_write(expanded.c, expanded.len);
 	}
 
 
@@ -551,5 +546,70 @@ static const char* wmerrors_error_type_to_string(int type) {
 PHP_FUNCTION(wmerrors_malloc_test) {
 	for (;;) {
 		free(malloc(100));
+	}
+}
+
+static void wmerrors_execute_file(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args) {
+	/* Copy the error message into PG(...), as in php_error_cb(), so that the
+	 * invoked script can get the error details from error_get_last(). */
+	char *buffer;
+	size_t buffer_len;
+	va_list my_args;
+
+	/* Don't destroy the caller's va_list */
+	va_copy(my_args, args);
+	buffer_len = vspprintf(&buffer, PG(log_errors_max_len), format, my_args);
+	va_end(my_args);
+
+	if (PG(last_error_message)) {
+		free(PG(last_error_message));
+		PG(last_error_message) = NULL;
+	}
+	if (PG(last_error_file)) {
+		free(PG(last_error_file));
+		PG(last_error_file) = NULL;
+	}
+	if (!error_filename) {
+		error_filename = "Unknown";
+	}
+	PG(last_error_type) = type;
+	PG(last_error_message) = strndup(buffer, buffer_len);
+	PG(last_error_file) = strdup(error_filename);
+	PG(last_error_lineno) = error_lineno;
+
+	efree(buffer);
+
+	/* Open the file and execute it as PHP.
+	 *
+	 * This part follows spl_autoload(), which is a rare example of an extension
+	 * invoking a PHP file.
+	 *
+	 * A comment in the PHP source states that it is unsafe to run userspace code
+	 * while handling an error. There are fewer reasons for that to be true now
+	 * than when that comment was written. The main remaining concern is that
+	 * the error handler may be invoked from within any emalloc() call. The global
+	 * state may be invalid at this time, since extensions generally do not expect
+	 * that emalloc() may execute userspace code.
+	 *
+	 * The PHP core will call userspace code on OOM only after zend_bailout() is
+	 * called, which resets the stack. That would probably be safer, but would
+	 * remove the ability for the called code to inspect the backtrace.
+	 */
+	int ret;
+	zval result;
+	zend_file_handle file_handle;
+	zend_op_array *new_op_array;
+
+	ret = php_stream_open_for_zend_ex(WMERRORS_G(error_script_file), &file_handle, STREAM_OPEN_FOR_INCLUDE);
+	if (ret == SUCCESS) {
+		new_op_array = zend_compile_file(&file_handle, ZEND_INCLUDE);
+		if (new_op_array) {
+			ZVAL_UNDEF(&result);
+			zend_execute(new_op_array, &result);
+			zend_destroy_file_handle(&file_handle);
+			destroy_op_array(new_op_array);
+			efree(new_op_array);
+			zval_ptr_dtor(&result);
+		}
 	}
 }
