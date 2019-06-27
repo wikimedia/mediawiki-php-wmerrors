@@ -25,6 +25,7 @@ PHP_MINFO_FUNCTION(wmerrors);
 
 ZEND_BEGIN_MODULE_GLOBALS(wmerrors)
 	char * message_file;
+	char * error_script_file;
 	char * log_file;
 	char * log_line_prefix;
 	int recursion_guard;

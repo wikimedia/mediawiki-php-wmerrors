@@ -32,6 +32,14 @@ wmerrors.message_file
         - $line:     The line number at which the error occurred
         - $message:  The error message
 
+wmerrors.error_script_file
+
+	Set this to the path to a PHP file which will be executed in the event of a
+	fatal error.
+
+	If the script file outputs an error message, display_errors should be disabled
+	to prevent a duplicate message from being shown.
+
 wmerrors.log_file
 
     The name of a file to send error reports to. This is similar to PHP's
