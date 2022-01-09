@@ -16,13 +16,27 @@
 #include "Zend/zend_builtin_functions.h" /* for zend_fetch_debug_backtrace */
 #include "Zend/zend_exceptions.h" /* for zend_ce_exception */
 
+#if PHP_VERSION_ID >= 80100
+#define wmerrors_error_filename zend_string
+#else
+#define wmerrors_error_filename const char
+#endif
+
+#if PHP_VERSION_ID >= 80000
+#define wmerrors_message zend_string *message
+#define wmerrors_message_args message
+#else
+#define wmerrors_message const char *format, va_list args
+#define wmerrors_message_args format, args
+#endif
+
 static int wmerrors_post_deactivate();
-static void wmerrors_cb(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args);
-static void wmerrors_show_message(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args);
+static void wmerrors_cb(int type, wmerrors_error_filename *error_filename, const uint32_t error_lineno, wmerrors_message);
+static void wmerrors_show_message(int type, wmerrors_error_filename *error_filename, const uint32_t error_lineno, wmerrors_message);
 static void wmerrors_get_concise_backtrace(smart_string *s);
 static void wmerrors_write_full_backtrace(smart_string *s);
 static void wmerrors_write_request_info(smart_string *s);
-static void wmerrors_execute_file(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args);
+static void wmerrors_execute_file(int type, wmerrors_error_filename *error_filename, const uint32_t error_lineno, wmerrors_message);
 
 ZEND_DECLARE_MODULE_GLOBALS(wmerrors)
 
@@ -68,7 +82,7 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_BOOLEAN("wmerrors.backtrace_in_php_error_message", "0", PHP_INI_ALL, OnUpdateBool, backtrace_in_php_error_message, zend_wmerrors_globals, wmerrors_globals)
 PHP_INI_END()
 
-void (*old_error_cb)(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args);
+void (*old_error_cb)(int type, wmerrors_error_filename *error_filename, const uint32_t error_lineno, wmerrors_message);
 
 static void php_wmerrors_init_globals(zend_wmerrors_globals *wmerrors_globals)
 {
@@ -121,9 +135,9 @@ PHP_MINFO_FUNCTION(wmerrors)
 }
 
 static const char* wmerrors_error_type_to_string(int type);
-static void wmerrors_log_error(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args);
+static void wmerrors_log_error(int type, wmerrors_error_filename *error_filename, const uint32_t error_lineno, wmerrors_message);
 
-static void wmerrors_cb(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args)
+static void wmerrors_cb(int type, wmerrors_error_filename *error_filename, const uint32_t error_lineno, wmerrors_message)
 {
 	smart_string new_filename = { NULL };
 
@@ -143,7 +157,7 @@ static void wmerrors_cb(int type, const char *error_filename, const uint32_t err
 		 * Ignore it if configured to do so.
 		 */
 		if (WMERRORS_G(recursion_guard) == 1 || !WMERRORS_G(ignore_logging_errors))
-			old_error_cb(type, error_filename, error_lineno, format, args);
+			old_error_cb(type, error_filename, error_lineno, wmerrors_message_args);
 		return;
 	}
 	WMERRORS_G(recursion_guard) = 1;
@@ -154,30 +168,48 @@ static void wmerrors_cb(int type, const char *error_filename, const uint32_t err
 	if ( WMERRORS_G(enabled) && strncmp(sapi_module.name, "cli", 3) ) {
 		/* Show the message */
 		if (WMERRORS_G(error_script_file) && WMERRORS_G(error_script_file)[0] != '\0') {
-			wmerrors_execute_file(type, error_filename, error_lineno, format, args);
+			wmerrors_execute_file(type, error_filename, error_lineno, wmerrors_message_args);
 		} else if (WMERRORS_G(message_file) && WMERRORS_G(message_file)[0] != '\0') {
-			wmerrors_show_message(type, error_filename, error_lineno, format, args);
+			wmerrors_show_message(type, error_filename, error_lineno, wmerrors_message_args);
 		}
 	}
 
 	if ( WMERRORS_G(enabled) ) {
 		/* Log the error */
-		wmerrors_log_error(type, error_filename, error_lineno, format, args);
+		wmerrors_log_error(type, error_filename, error_lineno, wmerrors_message_args);
 	}
 
 	/* Put a concise backtrace in the normal output */
 	if (WMERRORS_G(backtrace_in_php_error_message)) {
 		wmerrors_get_concise_backtrace(&new_filename);
 	}
-	smart_string_appendl(&new_filename, error_filename, strlen(error_filename));
+
+	smart_string_appendl(
+		&new_filename,
+#if PHP_VERSION_ID >= 80100
+		ZSTR_VAL(error_filename),
+		ZSTR_LEN(error_filename)
+#else
+		error_filename,
+		strlen(error_filename)
+#endif
+	);
 	smart_string_0(&new_filename);
 
 	WMERRORS_G(recursion_guard) = 0;
 	zend_set_memory_limit(PG(memory_limit));
 
 	/* Pass through */
-	old_error_cb(type, new_filename.c, error_lineno, format, args);
-
+	old_error_cb(
+		type,
+#if PHP_VERSION_ID >= 80100
+		zend_string_init(new_filename.c, new_filename.len, 0),
+#else
+		new_filename.c,
+#endif
+		error_lineno,
+		wmerrors_message_args
+	);
 	/* Note: old_error_cb() may not return, in which case there will be no
 	 * explicit free of new_filename */
 	smart_string_free(&new_filename);
@@ -259,21 +291,32 @@ static php_stream * wmerrors_open_log_file(const char* stream_name) {
 	return stream;
 }
 
-static void wmerrors_log_error(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args) {
-	char *input_message, *first_line;
-	int input_message_len, first_line_len;
+static void wmerrors_log_error(int type, wmerrors_error_filename *error_filename, const uint32_t error_lineno, wmerrors_message) {
+	char *first_line;
+	int first_line_len;
 	char error_time_str[256];
 	time_t simpleTime;
 	struct tm brokenTime;
-	va_list my_args;
 	php_stream *logfile_stream;
-	smart_string message = {NULL};
+	smart_string our_message = {NULL};
 	smart_string prefixed_message = {NULL};
 
 	if ( !WMERRORS_G(log_file) || *WMERRORS_G(log_file) == '\0') {
 		/* No log file configured */
 		return;
 	}
+
+#if PHP_VERSION_ID < 80000
+	char *input_message;
+	int input_message_len;
+	va_list my_args;
+
+	/* Don't destroy the caller's va_list */
+	va_copy(my_args, args);
+	/* Write the input message */
+	input_message_len = vspprintf(&input_message, 0, format, my_args);
+	va_end(my_args);
+#endif
 
 	/* Try opening the logging file */
 	/* Set recursion_guard==2 whenever we're doing something to the log file */
@@ -284,12 +327,6 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint3
 		return;
 	}
 
-	/* Don't destroy the caller's va_list */
-	va_copy(my_args, args);
-	/* Write the input message */
-	input_message_len = vspprintf(&input_message, 0, format, my_args);
-	va_end(my_args);
-
 	/* Get a date string */
 	simpleTime = time(NULL);
 	localtime_r(&simpleTime, &brokenTime);
@@ -298,26 +335,37 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint3
 	/* Make the initial log line */
 	first_line_len = spprintf(&first_line, 0, "[%s] %s: %.*s at %s on line %u%s",
 			error_time_str, wmerrors_error_type_to_string(type),
-			input_message_len, input_message, error_filename,
+#if PHP_VERSION_ID >= 80000
+			ZSTR_LEN(message), ZSTR_VAL(message),
+#else
+			input_message_len, input_message,
+#endif
+#if PHP_VERSION_ID >= 80100
+			ZSTR_VAL(error_filename),
+#else
+			error_filename,
+#endif
 			error_lineno, PHP_EOL);
-	smart_string_appendl(&message, first_line, first_line_len);
+	smart_string_appendl(&our_message, first_line, first_line_len);
+#if PHP_VERSION_ID < 80000
 	efree(input_message);
+#endif
 	efree(first_line);
 
 	/* Write the request info */
-	wmerrors_write_request_info(&message);
+	wmerrors_write_request_info(&our_message);
 
 	/* Write a backtrace */
 	if ( WMERRORS_G(log_backtrace) ) {
-		smart_string_appends(&message, "Backtrace:");
-		smart_string_appends(&message, PHP_EOL);
-		wmerrors_write_full_backtrace(&message);
+		smart_string_appends(&our_message, "Backtrace:");
+		smart_string_appends(&our_message, PHP_EOL);
+		wmerrors_write_full_backtrace(&our_message);
 	}
 
 	/* Add the log line prefix if requested */
-	if (message.c && WMERRORS_G(log_line_prefix) && WMERRORS_G(log_line_prefix)[0]) {
-		char * line_start = message.c;
-		char * message_end = message.c + message.len;
+	if (our_message.c && WMERRORS_G(log_line_prefix) && WMERRORS_G(log_line_prefix)[0]) {
+		char * line_start = our_message.c;
+		char * message_end = our_message.c + our_message.len;
 		char * line_end;
 		while (line_start < message_end) {
 			smart_string_appends(&prefixed_message, WMERRORS_G(log_line_prefix));
@@ -328,9 +376,9 @@ static void wmerrors_log_error(int type, const char *error_filename, const uint3
 			smart_string_appendl(&prefixed_message, line_start, line_end - line_start + 1);
 			line_start = line_end + 1;
 		}
-		smart_string_free(&message);
+		smart_string_free(&our_message);
 	} else {
-		prefixed_message = message;
+		prefixed_message = our_message;
 	}
 
 	WMERRORS_G(recursion_guard) = 2;
@@ -357,8 +405,8 @@ static void wmerrors_write_full_backtrace(smart_string * s) {
 
 	/* Call Exception::getTraceAsString() */
 	ZVAL_STRING(&backtrace_fname, "getTraceAsString");
-	status = call_user_function_ex(NULL, &exception, &backtrace_fname,
-		&trace, 0, NULL, 0, NULL);
+	status = call_user_function(NULL, &exception, &backtrace_fname,
+		&trace, 0, NULL);
 
 	zval_dtor(&backtrace_fname);
 	zval_ptr_dtor(&exception);
@@ -440,13 +488,12 @@ static zend_string *wmerrors_escape_html_entities(const char *old, size_t oldlen
 	return php_escape_html_entities((unsigned char*)old, oldlen, 0, ENT_COMPAT, NULL);
 }
 
-static void wmerrors_show_message(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args)
+static void wmerrors_show_message(int type, wmerrors_error_filename *error_filename, const uint32_t error_lineno, wmerrors_message)
 {
 	php_stream *stream;
-	zend_string *message;
+	zend_string *our_message;
 	long maxlen = PHP_STREAM_COPY_ALL;
 	smart_string expanded = { NULL };
-	va_list my_args;
 
 	/* Open the message file */
 	stream = php_stream_open_wrapper(WMERRORS_G(message_file), "rb",
@@ -455,19 +502,27 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 		return;
 	}
 
+#if PHP_VERSION_ID < 80000
+	va_list my_args;
 	/* Don't destroy the caller's va_list */
 	va_copy(my_args, args);
+#endif
 
 	/* Read the contents */
-	message = php_stream_copy_to_mem(stream, maxlen, 0);
+	our_message = php_stream_copy_to_mem(stream, maxlen, 0);
 	php_stream_close(stream);
 
 	/* Replace some tokens */
-	for (char *p = ZSTR_VAL(message); p < ZSTR_VAL(message) + ZSTR_LEN(message); p++) {
+	for (char *p = ZSTR_VAL(our_message); p < ZSTR_VAL(our_message) + ZSTR_LEN(our_message); p++) {
 		if (*p == '$') {
 			if (!strncmp(p, "$file", sizeof("$file")-1)) {
-				zend_string *str = wmerrors_escape_html_entities(error_filename,
-						strlen(error_filename));
+				zend_string *str = wmerrors_escape_html_entities(
+#if PHP_VERSION_ID >= 80100
+					ZSTR_VAL(error_filename), ZSTR_LEN(error_filename)
+#else
+					error_filename, strlen(error_filename)
+#endif
+				);
 				smart_string_appendl(&expanded, ZSTR_VAL(str), ZSTR_LEN(str));
 				zend_string_release(str);
 				p += sizeof("file") - 1;
@@ -475,12 +530,17 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 				smart_string_append_unsigned(&expanded, (zend_ulong)error_lineno);
 				p += sizeof("line") - 1;
 			} else if (!strncmp(p, "$message", sizeof("$message")-1)) {
+#if PHP_VERSION_ID >= 80000
+				zend_string *str = wmerrors_escape_html_entities(ZSTR_VAL(message), ZSTR_LEN(message));
+				smart_string_appendl(&expanded, ZSTR_VAL(str), ZSTR_LEN(str));
+#else
 				/* Don't destroy args */
 				char *buf;
 				size_t len = vspprintf(&buf, 0, format, my_args);
 				zend_string *str = wmerrors_escape_html_entities(buf, len);
 				smart_string_appendl(&expanded, ZSTR_VAL(str), ZSTR_LEN(str));
 				efree(buf);
+#endif
 				zend_string_release(str);
 				p += sizeof("message") - 1;
 			} else {
@@ -508,8 +568,10 @@ static void wmerrors_show_message(int type, const char *error_filename, const ui
 
 	/* Clean up */
 	smart_string_free(&expanded);
-	zend_string_release(message);
+#if PHP_VERSION_ID < 80000
 	va_end(my_args);
+#endif
+	zend_string_release(our_message);
 }
 
 static const char* wmerrors_error_type_to_string(int type) {
@@ -549,9 +611,10 @@ PHP_FUNCTION(wmerrors_malloc_test) {
 	}
 }
 
-static void wmerrors_execute_file(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args) {
+static void wmerrors_execute_file(int type, wmerrors_error_filename *error_filename, const uint32_t error_lineno, wmerrors_message) {
 	/* Copy the error message into PG(...), as in php_error_cb(), so that the
 	 * invoked script can get the error details from error_get_last(). */
+#if PHP_VERSION_ID < 80000
 	char *buffer;
 	size_t buffer_len;
 	va_list my_args;
@@ -560,6 +623,7 @@ static void wmerrors_execute_file(int type, const char *error_filename, const ui
 	va_copy(my_args, args);
 	buffer_len = vspprintf(&buffer, PG(log_errors_max_len), format, my_args);
 	va_end(my_args);
+#endif
 
 	if (PG(last_error_message)) {
 		free(PG(last_error_message));
@@ -570,14 +634,28 @@ static void wmerrors_execute_file(int type, const char *error_filename, const ui
 		PG(last_error_file) = NULL;
 	}
 	if (!error_filename) {
+#if PHP_VERSION_ID >= 80100
+		error_filename = ZSTR_KNOWN(ZEND_STR_UNKNOWN_CAPITALIZED);
+#else
 		error_filename = "Unknown";
+#endif
 	}
 	PG(last_error_type) = type;
+#if PHP_VERSION_ID >= 80000
+	PG(last_error_message) = zend_string_copy(message);
+#else
 	PG(last_error_message) = strndup(buffer, buffer_len);
+#endif
+#if PHP_VERSION_ID >= 80100
+	PG(last_error_file) = zend_string_copy(error_filename);
+#else
 	PG(last_error_file) = strdup(error_filename);
+#endif
 	PG(last_error_lineno) = error_lineno;
 
+#if PHP_VERSION_ID < 80000
 	efree(buffer);
+#endif
 
 	/* Open the file and execute it as PHP.
 	 *
@@ -600,7 +678,12 @@ static void wmerrors_execute_file(int type, const char *error_filename, const ui
 	zend_file_handle file_handle;
 	zend_op_array *new_op_array;
 
+#if PHP_VERSION_ID >= 80100
+	zend_stream_init_filename(&file_handle, WMERRORS_G(error_script_file));
+	ret = php_stream_open_for_zend_ex(&file_handle, STREAM_OPEN_FOR_INCLUDE);
+#else
 	ret = php_stream_open_for_zend_ex(WMERRORS_G(error_script_file), &file_handle, STREAM_OPEN_FOR_INCLUDE);
+#endif
 	if (ret == SUCCESS) {
 		new_op_array = zend_compile_file(&file_handle, ZEND_INCLUDE);
 		if (new_op_array) {
