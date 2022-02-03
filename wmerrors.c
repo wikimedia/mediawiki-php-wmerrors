@@ -62,7 +62,7 @@ zend_module_entry wmerrors_module_entry = {
 	PHP_RINIT(wmerrors),
 	PHP_RSHUTDOWN(wmerrors),
 	PHP_MINFO(wmerrors),
-	"1.2.0",
+	PHP_WMERRORS_VERSION,
 	NO_MODULE_GLOBALS,
 	wmerrors_post_deactivate,
 	STANDARD_MODULE_PROPERTIES_EX
@@ -131,7 +131,8 @@ int wmerrors_post_deactivate()
 PHP_MINFO_FUNCTION(wmerrors)
 {
 	php_info_print_table_start();
-	php_info_print_table_row(2, "Custom fatal error pages", "enabled");
+	php_info_print_table_header(2, "wmerrors support", "enabled");
+	php_info_print_table_row(2, "wmerrors version", PHP_WMERRORS_VERSION);
 	php_info_print_table_end();
 	DISPLAY_INI_ENTRIES();
 }
