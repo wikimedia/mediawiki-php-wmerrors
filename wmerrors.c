@@ -25,9 +25,11 @@
 #if PHP_VERSION_ID >= 80000
 #define wmerrors_message zend_string *message
 #define wmerrors_message_args message
+#define WMERRORS_DONT_BAIL E_DONT_BAIL
 #else
 #define wmerrors_message const char *format, va_list args
 #define wmerrors_message_args format, args
+#define WMERRORS_DONT_BAIL 0
 #endif
 
 static int wmerrors_post_deactivate();
@@ -140,6 +142,8 @@ static void wmerrors_log_error(int type, wmerrors_error_filename *error_filename
 static void wmerrors_cb(int type, wmerrors_error_filename *error_filename, const uint32_t error_lineno, wmerrors_message)
 {
 	smart_string new_filename = { NULL };
+	int orig_type = type;
+	type &= ~WMERRORS_DONT_BAIL;
 
 	/* Do not call the custom error handling if:
 	 * it's not enabled,
@@ -157,7 +161,7 @@ static void wmerrors_cb(int type, wmerrors_error_filename *error_filename, const
 		 * Ignore it if configured to do so.
 		 */
 		if (WMERRORS_G(recursion_guard) == 1 || !WMERRORS_G(ignore_logging_errors))
-			old_error_cb(type, error_filename, error_lineno, wmerrors_message_args);
+			old_error_cb(orig_type, error_filename, error_lineno, wmerrors_message_args);
 		return;
 	}
 	WMERRORS_G(recursion_guard) = 1;
@@ -201,7 +205,7 @@ static void wmerrors_cb(int type, wmerrors_error_filename *error_filename, const
 
 	/* Pass through */
 	old_error_cb(
-		type,
+		orig_type,
 #if PHP_VERSION_ID >= 80100
 		zend_string_init(new_filename.c, new_filename.len, 0),
 #else
@@ -316,6 +320,8 @@ static void wmerrors_log_error(int type, wmerrors_error_filename *error_filename
 	/* Write the input message */
 	input_message_len = vspprintf(&input_message, 0, format, my_args);
 	va_end(my_args);
+#else
+	int input_message_len = ZSTR_LEN(message) > INT_MAX ? INT_MAX : ZSTR_LEN(message);
 #endif
 
 	/* Try opening the logging file */
@@ -336,7 +342,7 @@ static void wmerrors_log_error(int type, wmerrors_error_filename *error_filename
 	first_line_len = spprintf(&first_line, 0, "[%s] %s: %.*s at %s on line %u%s",
 			error_time_str, wmerrors_error_type_to_string(type),
 #if PHP_VERSION_ID >= 80000
-			ZSTR_LEN(message), ZSTR_VAL(message),
+			input_message_len, ZSTR_VAL(message),
 #else
 			input_message_len, input_message,
 #endif
