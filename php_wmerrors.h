@@ -5,7 +5,7 @@
 extern zend_module_entry wmerrors_module_entry;
 #define phpext_wmerrors_ptr &wmerrors_module_entry
 
-#define PHP_WMERRORS_VERSION "1.3.0"
+#define PHP_WMERRORS_VERSION "2.0.0"
 
 #ifdef PHP_WIN32
 #define PHP_WMERRORS_API __declspec(dllexport)
