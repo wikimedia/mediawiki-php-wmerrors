@@ -12,7 +12,7 @@
 #include "ext/standard/php_standard.h"
 #include "SAPI.h" /* for sapi_module */
 #include "ext/date/php_date.h" /* for php_format_date */
-#include "ext/standard/php_smart_string.h" /* for smart_string */
+#include "Zend/zend_smart_string.h" /* for smart_string */
 #include "Zend/zend_builtin_functions.h" /* for zend_fetch_debug_backtrace */
 #include "Zend/zend_exceptions.h" /* for zend_ce_exception */
 

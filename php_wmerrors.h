@@ -17,7 +17,7 @@ extern zend_module_entry wmerrors_module_entry;
 #include "TSRM.h"
 #endif
 
-#include "ext/standard/php_smart_string_public.h"
+#include "Zend/zend_smart_string_public.h"
 
 PHP_MINIT_FUNCTION(wmerrors);
 PHP_MSHUTDOWN_FUNCTION(wmerrors);
